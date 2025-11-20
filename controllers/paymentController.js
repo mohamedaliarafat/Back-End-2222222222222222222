@@ -1,7 +1,6 @@
 // controllers/paymentController.js
 const Payment = require('../models/Payment');
 const Order = require('../models/Order');
-const Petrol = require('../models/Petrol');
 const Notification = require('../models/Notification');
 const User = require('../models/User'); // ⭐ مهم: أضف استيراد User
 
@@ -108,6 +107,10 @@ paymentController.getPaymentStats = async (req, res) => {
 // 💳 رفع إيصال الدفع
 paymentController.uploadPaymentProof = async (req, res) => {
   try {
+    console.log('📤 بدء رفع إيصال الدفع...');
+    console.log('Params:', req.params);
+    console.log('Body:', req.body);
+
     const userId = req.user.userId;
     const { orderId, orderType } = req.params;
     const {
@@ -116,23 +119,17 @@ paymentController.uploadPaymentProof = async (req, res) => {
       transferDate,
       referenceNumber,
       amount,
-      receiptFile
+      receiptFile,
+      orderNumber
     } = req.body;
 
-    let order;
+    // البحث عن الطلب - استخدام Order فقط
+    const order = await Order.findOne({ 
+      _id: orderId, 
+      customerId: userId 
+    });
 
-    // البحث عن الطلب
-    if (orderType === 'fuel') {
-      order = await Petrol.findOne({ 
-        _id: orderId, 
-        user: userId 
-      });
-    } else {
-      order = await Order.findOne({ 
-        _id: orderId, 
-        customerId: userId 
-      });
-    }
+    console.log('🔍 Order found:', order);
 
     if (!order) {
       return res.status(404).json({
@@ -141,84 +138,71 @@ paymentController.uploadPaymentProof = async (req, res) => {
       });
     }
 
-    // التحقق من حالة الطلب
-    if (order.status !== 'waiting_payment') {
-      return res.status(400).json({
-        success: false,
-        error: 'الطلب غير جاهز للدفع'
-      });
-    }
-
     // إنشاء أو تحديث سجل الدفع
     let payment = await Payment.findOne({ orderId });
+    console.log('💳 Payment found:', payment);
+
+    const paymentData = {
+      bankTransfer: {
+        bankName: bankName || 'مصرف الراجحي',
+        accountNumber: accountNumber || 'SA1234567890123456789012',
+        transferDate: transferDate ? new Date(transferDate) : new Date(),
+        referenceNumber: referenceNumber || orderNumber || `REF-${Date.now()}`
+      },
+      receipt: {
+        file: receiptFile,
+        fileName: `receipt_${orderId}_${Date.now()}.jpg`,
+        uploadedAt: new Date()
+      },
+      status: 'pending',
+      proofSubmittedAt: new Date()
+    };
 
     if (payment) {
       // تحديث السجل الموجود
-      payment.bankTransfer = {
-        bankName,
-        accountNumber,
-        transferDate: new Date(transferDate),
-        referenceNumber
-      };
-      payment.receipt = {
-        file: receiptFile,
-        fileName: `receipt_${orderId}.jpg`,
-        uploadedAt: new Date()
-      };
-      payment.status = 'under_review';
-      payment.proofSubmittedAt = new Date();
+      payment.bankTransfer = paymentData.bankTransfer;
+      payment.receipt = paymentData.receipt;
+      payment.status = paymentData.status;
+      payment.proofSubmittedAt = paymentData.proofSubmittedAt;
+      payment.attemptCount = (payment.attemptCount || 0) + 1;
+      payment.lastAttemptAt = new Date();
     } else {
       // إنشاء سجل جديد
       payment = new Payment({
         orderId,
         userId,
-        userName: req.user.name,
-        totalAmount: amount || order.pricing?.finalPrice || order.totalAmount,
-        bankTransfer: {
-          bankName,
-          accountNumber,
-          transferDate: new Date(transferDate),
-          referenceNumber
-        },
-        receipt: {
-          file: receiptFile,
-          fileName: `receipt_${orderId}.jpg`,
-          uploadedAt: new Date()
-        },
-        status: 'under_review',
-        proofSubmittedAt: new Date()
+        userName: req.user.name || 'عميل',
+        totalAmount: amount || order.totalAmount || 0,
+        currency: 'SAR',
+        ...paymentData,
+        paymentMethod: 'bank_transfer',
+        attemptCount: 1,
+        lastAttemptAt: new Date()
       });
     }
 
     await payment.save();
+    console.log('✅ Payment saved:', payment._id);
 
     // تحديث حالة الطلب
-    if (orderType === 'fuel') {
-      await Petrol.findByIdAndUpdate(orderId, { 
-        status: 'processing',
-        'payment.status': 'verifying'
-      });
-    } else {
-      await Order.findByIdAndUpdate(orderId, { 
-        status: 'processing',
-        'payment.status': 'verifying'
-      });
-    }
-
-    // إرسال إشعار للإدمن
-    await sendPaymentVerificationNotification(order, orderType);
+    await Order.findByIdAndUpdate(orderId, {
+      status: 'processing',
+      paymentStatus: 'verifying',
+      updatedAt: new Date()
+    });
+    console.log('✅ Order status updated');
 
     res.json({
       success: true,
       message: 'تم رفع إيصال الدفع بنجاح وجاري المراجعة',
-      payment
+      paymentId: payment._id
     });
 
   } catch (error) {
     console.error('❌ خطأ في رفع إيصال الدفع:', error);
     res.status(500).json({
       success: false,
-      error: error.message
+      error: error.message || 'فشل في رفع إيصال الدفع'
     });
   }
 };

@@ -1,129 +1,132 @@
-// routes/orders.js
+// routes/Orders.js
 const express = require('express');
 const authMiddleware = require('../middleware/auth');
 const roleMiddleware = require('../middleware/role');
+const OrderController = require('../controllers/orderController');
 
 const router = express.Router();
 
-// 📊 إحصائيات الطلبات - ⭐ المسار الناقص
+// 📊 إحصائيات طلبات الوقود
 router.get('/stats', 
   authMiddleware.authenticate, 
   roleMiddleware.checkRole(['admin', 'monitoring']), 
-  (req, res) => {
-    res.json({
-      success: true,
-      message: 'Order details - under development',
-      orderId: 'stats',
-      stats: {
-        totalOrders: 0,
-        pendingOrders: 0,
-        completedOrders: 0,
-        cancelledOrders: 0,
-        totalRevenue: 0,
-        ordersByType: [],
-        recentOrders: []
-      }
-    });
+  async (req, res) => {
+    try {
+      const Order = require('../models/Order');
+      
+      const stats = await Order.aggregate([
+        {
+          $group: {
+            _id: null,
+            totalOrders: { $sum: 1 },
+            pendingOrders: {
+              $sum: { $cond: [{ $eq: ['$status', 'pending'] }, 1, 0] }
+            },
+            completedOrders: {
+              $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] }
+            },
+            cancelledOrders: {
+              $sum: { $cond: [{ $eq: ['$status', 'cancelled'] }, 1, 0] }
+            },
+            totalRevenue: { $sum: '$pricing.finalPrice' },
+            totalLiters: { $sum: '$fuelDetails.fuelLiters' }
+          }
+        }
+      ]);
+
+      const ordersByFuelType = await Order.aggregate([
+        {
+          $group: {
+            _id: '$fuelDetails.fuelType',
+            count: { $sum: 1 },
+            totalLiters: { $sum: '$fuelDetails.fuelLiters' }
+          }
+        }
+      ]);
+
+      const recentOrders = await Order.find()
+        .populate('customerId', 'name phone')
+        .sort({ createdAt: -1 })
+        .limit(5);
+
+      res.json({
+        success: true,
+        message: 'إحصائيات طلبات الوقود',
+        stats: stats[0] || {
+          totalOrders: 0,
+          pendingOrders: 0,
+          completedOrders: 0,
+          cancelledOrders: 0,
+          totalRevenue: 0,
+          totalLiters: 0
+        },
+        ordersByFuelType,
+        recentOrders
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
   }
 );
 
-// 📦 الطلبات العادية
-router.post('/', authMiddleware.authenticate, (req, res) => {
-  res.json({
-    success: true,
-    message: 'Order created - under development',
-    order: req.body
-  });
-});
+// ⛽ إنشاء طلب وقود
+router.post('/', authMiddleware.authenticate, OrderController.createOrder);
 
-router.get('/', authMiddleware.authenticate, (req, res) => {
-  res.json({
-    success: true,
-    message: 'Orders list - under development',
-    orders: []
-  });
-});
+// 📋 جلب طلبات الوقود
+router.get('/', authMiddleware.authenticate, OrderController.getOrders);
 
-router.get('/:orderId', authMiddleware.authenticate, (req, res) => {
-  res.json({
-    success: true,
-    message: 'Order details - under development',
-    orderId: req.params.orderId
-  });
-});
+// 👁️ جلب طلب وقود محدد
+router.get('/:orderId', authMiddleware.authenticate, OrderController.getOrder);
 
-// ⛽ طلبات الوقود
-router.post('/fuel', authMiddleware.authenticate, (req, res) => {
-  res.json({
-    success: true,
-    message: 'Fuel order created - under development',
-    order: req.body
-  });
-});
+// ✅ تحديث حالة طلب الوقود (للمشرفين)
+router.patch('/:orderId/status', 
+  authMiddleware.authenticate, 
+  roleMiddleware.checkRole(['approval_supervisor', 'admin', 'monitoring']), 
+  OrderController.updateOrderStatus
+);
 
-router.get('/fuel/:orderId', authMiddleware.authenticate, (req, res) => {
-  res.json({
-    success: true,
-    message: 'Fuel order details - under development',
-    orderId: req.params.orderId,
-    type: 'fuel'
-  });
-});
+// 💰 تحديد سعر طلب الوقود
+router.patch('/:orderId/price', 
+  authMiddleware.authenticate, 
+  roleMiddleware.checkRole(['admin']), 
+  OrderController.setOrderPrice
+);
 
-// 🛍️ طلبات المنتجات
-router.post('/product', authMiddleware.authenticate, (req, res) => {
-  res.json({
-    success: true,
-    message: 'Product order created - under development',
-    order: req.body
-  });
-});
+// 💰 تحديث السعر فقط بدون تغيير الحالة
+router.patch('/:orderId/price-only', 
+  authMiddleware.authenticate, 
+  roleMiddleware.checkRole(['admin']), 
+  OrderController.updateOrderPriceOnly
+);
 
-router.get('/product/:orderId', authMiddleware.authenticate, (req, res) => {
-  res.json({
-    success: true,
-    message: 'Product order details - under development',
-    orderId: req.params.orderId,
-    type: 'product'
-  });
-});
+// 🎛️ موافقة نهائية على الطلب مع السعر
+router.patch('/:orderId/final-approve', 
+  authMiddleware.authenticate, 
+  roleMiddleware.checkRole(['admin', 'approval_supervisor']), 
+  OrderController.finalApproveOrder
+);
 
-// 👨‍💼 إدارة الطلبات (للمشرفين والإدمن)
-router.patch('/:orderId/status', authMiddleware.authenticate, roleMiddleware.checkRole(['approval_supervisor', 'admin', 'monitoring']), (req, res) => {
-  res.json({
-    success: true,
-    message: 'Order status updated - under development',
-    orderId: req.params.orderId,
-    status: req.body.status
-  });
-});
+// 🚗 تخصيص سائق لطلب الوقود
+router.patch('/:orderId/assign-driver', 
+  authMiddleware.authenticate, 
+  roleMiddleware.checkRole(['admin', 'approval_supervisor']), 
+  OrderController.assignOrderDriver
+);
 
-router.patch('/:orderId/price', authMiddleware.authenticate, roleMiddleware.checkRole(['admin']), (req, res) => {
-  res.json({
-    success: true,
-    message: 'Order price updated - under development',
-    orderId: req.params.orderId,
-    price: req.body.price
-  });
-});
+// 📍 تحديث تتبع طلب الوقود (للسائق)
+router.patch('/:orderId/tracking', 
+  authMiddleware.authenticate, 
+  roleMiddleware.checkRole(['driver']), 
+  OrderController.updateOrderTracking
+);
 
-router.patch('/:orderId/assign-driver', authMiddleware.authenticate, roleMiddleware.checkRole(['admin', 'approval_supervisor']), (req, res) => {
-  res.json({
-    success: true,
-    message: 'Driver assigned - under development',
-    orderId: req.params.orderId,
-    driverId: req.body.driverId
-  });
-});
-
-// 🚗 تتبع الطلبات (للسائقين)
-router.patch('/:orderId/tracking', authMiddleware.authenticate, roleMiddleware.checkRole(['driver']), (req, res) => {
-  res.json({
-    success: true,
-    message: 'Order tracking updated - under development',
-    orderId: req.params.orderId,
-    tracking: req.body.tracking
-  });
-});
+// ❌ إلغاء طلب الوقود
+router.patch('/:orderId/cancel', 
+  authMiddleware.authenticate, 
+  OrderController.cancelOrder
+);
 
 module.exports = router;

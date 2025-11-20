@@ -2,8 +2,11 @@
 const Address = require('../models/Address');
 const User = require('../models/User');
 
+
+const addressController = {};
+
 // 📍 إنشاء عنوان جديد
-exports.createAddress = async (req, res) => {
+addressController.createAddress = async (req, res) => {
   try {
     const userId = req.user.userId;
     const {
@@ -64,7 +67,7 @@ exports.createAddress = async (req, res) => {
 };
 
 // 📋 جلب عناوين المستخدم
-exports.getUserAddresses = async (req, res) => {
+addressController.getUserAddresses = async (req, res) => {
   try {
     const userId = req.user.userId;
     const { isDefault } = req.query;
@@ -92,7 +95,7 @@ exports.getUserAddresses = async (req, res) => {
 };
 
 // 👁️ جلب عنوان محدد
-exports.getAddress = async (req, res) => {
+addressController.getAddress = async (req, res) => {
   try {
     const { addressId } = req.params;
     const userId = req.user.userId;
@@ -124,7 +127,7 @@ exports.getAddress = async (req, res) => {
 };
 
 // ✏️ تحديث العنوان
-exports.updateAddress = async (req, res) => {
+addressController.updateAddress = async (req, res) => {
   try {
     const { addressId } = req.params;
     const userId = req.user.userId;
@@ -166,7 +169,7 @@ exports.updateAddress = async (req, res) => {
 };
 
 // 🗑️ حذف العنوان
-exports.deleteAddress = async (req, res) => {
+addressController.deleteAddress = async (req, res) => {
   try {
     const { addressId } = req.params;
     const userId = req.user.userId;
@@ -212,7 +215,7 @@ exports.deleteAddress = async (req, res) => {
 };
 
 // ⭐ تعيين عنوان افتراضي
-exports.setDefaultAddress = async (req, res) => {
+addressController.setDefaultAddress = async (req, res) => {
   try {
     const { addressId } = req.params;
     const userId = req.user.userId;
@@ -250,3 +253,6 @@ exports.setDefaultAddress = async (req, res) => {
     });
   }
 };
+
+
+module.exports = addressController;

@@ -5,8 +5,11 @@ const Petrol = require('../models/Petrol');
 const User = require('../models/User');
 const Notification = require('../models/Notification');
 
+
+const chatController = {};
+
 // 💬 إنشاء محادثة جديدة
-exports.createChat = async (req, res) => {
+chatController.createChat = async (req, res) => {
   try {
     const { orderId, orderType } = req.params;
     const userId = req.user.userId;
@@ -75,7 +78,7 @@ exports.createChat = async (req, res) => {
 };
 
 // 📨 إرسال رسالة
-exports.sendMessage = async (req, res) => {
+chatController.sendMessage = async (req, res) => {
   try {
     const { chatId } = req.params;
     const { content, type, receiverId } = req.body;
@@ -148,7 +151,7 @@ exports.sendMessage = async (req, res) => {
 };
 
 // 📥 جلب رسائل المحادثة
-exports.getMessages = async (req, res) => {
+chatController.getMessages = async (req, res) => {
   try {
     const { chatId } = req.params;
     const { page = 1, limit = 50 } = req.query;
@@ -204,7 +207,7 @@ exports.getMessages = async (req, res) => {
 };
 
 // 📞 بدء مكالمة
-exports.startCall = async (req, res) => {
+chatController.startCall = async (req, res) => {
   try {
     const { chatId } = req.params;
     const { callType } = req.body;
@@ -281,7 +284,7 @@ exports.startCall = async (req, res) => {
 };
 
 // 📋 جلب محادثات المستخدم
-exports.getUserChats = async (req, res) => {
+chatController.getUserChats = async (req, res) => {
   try {
     const userId = req.user.userId;
     const { page = 1, limit = 20 } = req.query;
@@ -347,7 +350,7 @@ exports.getUserChats = async (req, res) => {
 };
 
 // 🗑️ حذف محادثة
-exports.deleteChat = async (req, res) => {
+chatController.deleteChat = async (req, res) => {
   try {
     const { chatId } = req.params;
     const userId = req.user.userId;
@@ -463,3 +466,6 @@ const getMessageTypeText = (type) => {
   };
   return typeMap[type] || 'رسالة';
 };
+
+
+module.exports = chatController;

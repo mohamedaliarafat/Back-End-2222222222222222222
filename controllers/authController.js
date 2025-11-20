@@ -1,35 +1,67 @@
 const User = require('../models/User');
-const CompleteProfile = require('../models/CompleteProfile');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const twilio = require('twilio');
 
-// تعريف authController ككائن فارغ أولاً
 const authController = {};
 
-// 🔐 التسجيل
+// إعداد Twilio
+const client = twilio(
+  process.env.TWILIO_ACCOUNT_SID,
+  process.env.TWILIO_AUTH_TOKEN
+);
+
 authController.register = async (req, res) => {
   try {
-    const { phone, password, userType } = req.body;
+    const { phone, password, userType, firebaseUid } = req.body;
 
-    // التحقق من وجود المستخدم
-    const existingUser = await User.findOne({ phone });
-    if (existingUser) {
-      return res.status(400).json({
-        success: false,
-        error: 'رقم الهاتف مسجل مسبقاً'
-      });
+    if (!phone || !password) {
+      return res.status(400).json({ success: false, error: 'رقم الهاتف وكلمة المرور مطلوبين' });
     }
 
-    // إنشاء مستخدم جديد
+    // التحقق من وجود المستخدم
+    let existingUser = await User.findOne({ phone });
+    if (existingUser) {
+      if (firebaseUid && existingUser.firebaseUid !== firebaseUid) {
+        existingUser.firebaseUid = firebaseUid;
+        await existingUser.save();
+      }
+      return res.status(400).json({ success: false, error: 'رقم الهاتف مسجل مسبقاً' });
+    }
+
+    // توليد OTP عشوائي 6 أرقام
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+      
+      let formattedPhone;
+
+      // إذا الرقم يبدأ بـ "+" فهو أصلاً بصيغة دولية
+      if (phone.startsWith('+')) {
+        formattedPhone = phone;
+      } else {
+        // أزل أي صفر بادئ ثم أضف رمز الدولة
+        formattedPhone = '+966' + phone.replace(/^0+/, '');
+      }
+
+      await client.messages.create({
+        body: `رمز التحقق الخاص بك هو: ${otp}`,
+        messagingServiceSid: process.env.TWILIO_MESSAGING_SERVICE_SID,
+        to: formattedPhone,
+      });
+
+
+    // فقط بعد نجاح الإرسال، نعمل حفظ للمستخدم
     const user = new User({
       phone,
       password,
-      userType: userType || 'customer'
+      userType: userType || 'customer',
+      firebaseUid: firebaseUid || null,
+      tempOtp: otp // لازم يكون موجود في الموديل أو تستخدم Redis
     });
 
     await user.save();
 
-    // إنشاء token
+    // إنشاء JWT
     const token = jwt.sign(
       { userId: user._id, phone: user.phone },
       process.env.JWT_SECRET || 'fallback-secret',
@@ -38,7 +70,7 @@ authController.register = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: 'تم التسجيل بنجاح',
+      message: 'تم إرسال OTP بنجاح، تحقق من رقم هاتفك',
       token,
       user: {
         id: user._id,
@@ -49,37 +81,37 @@ authController.register = async (req, res) => {
     });
 
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
+    console.error('Register error:', error);
+    res.status(500).json({ success: false, error: 'حدث خطأ أثناء إرسال OTP، لم يتم تسجيل المستخدم' });
   }
 };
+
+module.exports = authController;
+
 
 // 🔐 تسجيل الدخول
 authController.login = async (req, res) => {
   try {
-    const { phone, password } = req.body;
+    const { phone, password, firebaseUid } = req.body;
 
-    // البحث عن المستخدم
-    const user = await User.findOne({ phone });
+    let user = await User.findOne({ phone });
     if (!user) {
-      return res.status(400).json({
-        success: false,
-        error: 'رقم الهاتف أو كلمة المرور غير صحيحة'
-      });
+      return res.status(400).json({ success: false, error: 'رقم الهاتف أو كلمة المرور غير صحيحة' });
     }
 
     // التحقق من كلمة المرور
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
-      return res.status(400).json({
-        success: false,
-        error: 'رقم الهاتف أو كلمة المرور غير صحيحة'
-      });
+      return res.status(400).json({ success: false, error: 'رقم الهاتف أو كلمة المرور غير صحيحة' });
     }
 
-    // إنشاء token
+    // تحديث firebaseUid إذا موجود
+    if (firebaseUid && user.firebaseUid !== firebaseUid) {
+      user.firebaseUid = firebaseUid;
+      await user.save();
+    }
+
+    // إنشاء JWT
     const token = jwt.sign(
       { userId: user._id, phone: user.phone },
       process.env.JWT_SECRET || 'fallback-secret',
@@ -100,264 +132,7 @@ authController.login = async (req, res) => {
     });
 
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-};
-
-
-// في controllers/authController.js - أضف هذه الدالة
-authController.getProfile = async (req, res) => {
-  try {
-    const userId = req.user.userId;
-    
-    const user = await User.findById(userId)
-      .select('-password')
-      .populate('completeProfile');
-    
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        error: 'المستخدم غير موجود'
-      });
-    }
-
-    res.json({
-      success: true,
-      user: {
-        id: user._id,
-        phone: user.phone,
-        userType: user.userType,
-        isVerified: user.isVerified,
-        name: user.name,
-        email: user.email,
-        profile: user.profile,
-        isActive: user.isActive,
-        completeProfile: user.completeProfile,
-        createdAt: user.createdAt,
-        updatedAt: user.updatedAt
-      }
-    });
-
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: 'فشل في تحميل الملف الشخصي: ' + error.message
-    });
-  }
-};
-
-// 📞 التحقق من رقم الهاتف
-authController.verifyPhone = async (req, res) => {
-  try {
-    const { phone, verificationCode } = req.body;
-
-    const user = await User.findOne({ phone });
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        error: 'المستخدم غير موجود'
-      });
-    }
-
-    // هنا يجب التحقق من الكود (في التطبيق الحقيقي)
-    if (verificationCode !== "123456") { // كود مؤقت للاختبار
-      return res.status(400).json({
-        success: false,
-        error: 'كود التحقق غير صحيح'
-      });
-    }
-
-    user.isVerified = true;
-    await user.save();
-
-    res.json({
-      success: true,
-      message: 'تم التحقق من رقم الهاتف بنجاح'
-    });
-
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-};
-
-// 🔄 إعادة إرسال كود التحقق
-authController.resendVerification = async (req, res) => {
-  try {
-    const { phone } = req.body;
-
-    const user = await User.findOne({ phone });
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        error: 'المستخدم غير موجود'
-      });
-    }
-
-    // في التطبيق الحقيقي: إرسال SMS
-    res.json({
-      success: true,
-      message: 'تم إرسال كود التحقق'
-    });
-
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-};
-
-// 📋 إكمال الملف الشخصي بعد التحقق
-authController.completeProfile = async (req, res) => {
-  try {
-    const userId = req.user.userId;
-    const {
-      companyName,
-      email,
-      contactPerson,
-      contactPhone,
-      contactPosition,
-      nationalAddress,
-      vehicleInfo
-    } = req.body;
-
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        error: 'المستخدم غير موجود'
-      });
-    }
-
-    // إنشاء أو تحديث الملف الشخصي الكامل
-    let completeProfile = await CompleteProfile.findOne({ user: userId });
-
-    if (completeProfile) {
-      // تحديث الملف الموجود
-      if (companyName) completeProfile.companyName = companyName;
-      if (email) completeProfile.email = email;
-      if (contactPerson) completeProfile.contactPerson = contactPerson;
-      if (contactPhone) completeProfile.contactPhone = contactPhone;
-      if (contactPosition) completeProfile.contactPosition = contactPosition;
-      if (nationalAddress) completeProfile.nationalAddress = nationalAddress;
-      if (vehicleInfo) completeProfile.vehicleInfo = vehicleInfo;
-    } else {
-      // إنشاء ملف جديد
-      completeProfile = new CompleteProfile({
-        user: userId,
-        companyName: companyName || "",
-        email: email || "",
-        contactPerson: contactPerson || "",
-        contactPhone: contactPhone || "",
-        contactPosition: contactPosition || "",
-        nationalAddress: nationalAddress || {},
-        vehicleInfo: vehicleInfo || {},
-        profileStatus: 'draft'
-      });
-    }
-
-    await completeProfile.save();
-
-    // ربط الملف الكامل بالمستخدم
-    user.completeProfile = completeProfile._id;
-    await user.save();
-
-    res.json({
-      success: true,
-      message: 'تم إكمال البيانات الأساسية بنجاح',
-      profile: completeProfile,
-      nextStep: 'upload_documents' // الخطوة التالية: رفع المستندات
-    });
-
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-};
-
-// 📄 رفع مستندات الملف الشخصي
-authController.uploadDocuments = async (req, res) => {
-  try {
-    const userId = req.user.userId;
-    const { documents } = req.body;
-
-    let completeProfile = await CompleteProfile.findOne({ user: userId });
-
-    if (!completeProfile) {
-      return res.status(404).json({
-        success: false,
-        error: 'الملف الشخصي غير موجود. يرجى إكمال البيانات الأساسية أولاً'
-      });
-    }
-
-    // تحديث المستندات
-    if (documents.commercialLicense) {
-      completeProfile.documents.commercialLicense = { 
-        ...completeProfile.documents.commercialLicense,
-        ...documents.commercialLicense 
-      };
-    }
-    
-    if (documents.energyLicense) {
-      completeProfile.documents.energyLicense = { 
-        ...completeProfile.documents.energyLicense,
-        ...documents.energyLicense 
-      };
-    }
-    
-    if (documents.commercialRecord) {
-      completeProfile.documents.commercialRecord = { 
-        ...completeProfile.documents.commercialRecord,
-        ...documents.commercialRecord 
-      };
-    }
-    
-    if (documents.taxNumber) {
-      completeProfile.documents.taxNumber = { 
-        ...completeProfile.documents.taxNumber,
-        ...documents.taxNumber 
-      };
-    }
-    
-    if (documents.nationalAddressDocument) {
-      completeProfile.documents.nationalAddressDocument = { 
-        ...completeProfile.documents.nationalAddressDocument,
-        ...documents.nationalAddressDocument 
-      };
-    }
-    
-    if (documents.civilDefenseLicense) {
-      completeProfile.documents.civilDefenseLicense = { 
-        ...completeProfile.documents.civilDefenseLicense,
-        ...documents.civilDefenseLicense 
-      };
-    }
-
-    // تغيير الحالة لـ مقدم
-    completeProfile.profileStatus = 'submitted';
-
-    await completeProfile.save();
-
-    res.json({
-      success: true,
-      message: 'تم رفع المستندات بنجاح وجاري مراجعتها',
-      profile: completeProfile,
-      nextStep: 'waiting_approval' // الانتظار للموافقة
-    });
-
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
+    res.status(500).json({ success: false, error: error.message });
   }
 };
 
@@ -365,13 +140,9 @@ authController.uploadDocuments = async (req, res) => {
 authController.getProfile = async (req, res) => {
   try {
     const userId = req.user.userId;
-
     const user = await User.findById(userId).populate('completeProfile');
     if (!user) {
-      return res.status(404).json({
-        success: false,
-        error: 'المستخدم غير موجود'
-      });
+      return res.status(404).json({ success: false, error: 'المستخدم غير موجود' });
     }
 
     res.json({
@@ -386,10 +157,107 @@ authController.getProfile = async (req, res) => {
     });
 
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// 📞 التحقق من رقم الهاتف
+authController.verifyPhone = async (req, res) => {
+  try {
+    const { phone, verificationCode } = req.body;
+
+    const user = await User.findOne({ phone });
+    if (!user) return res.status(404).json({ success: false, error: 'المستخدم غير موجود' });
+
+    // كود مؤقت للاختبار
+    if (verificationCode !== "123456") {
+      return res.status(400).json({ success: false, error: 'كود التحقق غير صحيح' });
+    }
+
+    user.isVerified = true;
+    await user.save();
+
+    res.json({ success: true, message: 'تم التحقق من رقم الهاتف بنجاح' });
+
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// 🔄 إعادة إرسال كود التحقق
+authController.resendVerification = async (req, res) => {
+  try {
+    const { phone } = req.body;
+    const user = await User.findOne({ phone });
+    if (!user) return res.status(404).json({ success: false, error: 'المستخدم غير موجود' });
+
+    res.json({ success: true, message: 'تم إرسال كود التحقق' });
+
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// 📋 إكمال الملف الشخصي
+authController.completeProfile = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { companyName, email, contactPerson, contactPhone, contactPosition, nationalAddress, vehicleInfo } = req.body;
+
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ success: false, error: 'المستخدم غير موجود' });
+
+    let completeProfile = await CompleteProfile.findOne({ user: userId });
+
+    if (completeProfile) {
+      Object.assign(completeProfile, { companyName, email, contactPerson, contactPhone, contactPosition, nationalAddress, vehicleInfo });
+    } else {
+      completeProfile = new CompleteProfile({
+        user: userId,
+        companyName: companyName || "",
+        email: email || "",
+        contactPerson: contactPerson || "",
+        contactPhone: contactPhone || "",
+        contactPosition: contactPosition || "",
+        nationalAddress: nationalAddress || {},
+        vehicleInfo: vehicleInfo || {},
+        profileStatus: 'draft'
+      });
+    }
+
+    await completeProfile.save();
+    user.completeProfile = completeProfile._id;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'تم إكمال البيانات الأساسية بنجاح',
+      profile: completeProfile,
+      nextStep: 'upload_documents'
     });
+
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// 📄 رفع المستندات
+authController.uploadDocuments = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { documents } = req.body;
+
+    let completeProfile = await CompleteProfile.findOne({ user: userId });
+    if (!completeProfile) return res.status(404).json({ success: false, error: 'الملف الشخصي غير موجود' });
+
+    completeProfile.documents = { ...completeProfile.documents, ...documents };
+    completeProfile.profileStatus = 'submitted';
+    await completeProfile.save();
+
+    res.json({ success: true, message: 'تم رفع المستندات بنجاح وجاري مراجعتها', profile: completeProfile });
+
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
   }
 };
 
@@ -400,71 +268,30 @@ authController.updateProfile = async (req, res) => {
     const updateData = req.body;
 
     const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        error: 'المستخدم غير موجود'
-      });
-    }
+    if (!user) return res.status(404).json({ success: false, error: 'المستخدم غير موجود' });
 
-    // تحديث البيانات الأساسية
-    if (updateData.phone) user.phone = updateData.phone;
+    Object.assign(user, updateData);
     await user.save();
 
-    res.json({
-      success: true,
-      message: 'تم تحديث الملف الشخصي بنجاح',
-      user: {
-        id: user._id,
-        phone: user.phone,
-        userType: user.userType,
-        isVerified: user.isVerified
-      }
-    });
+    res.json({ success: true, message: 'تم تحديث الملف الشخصي بنجاح', user });
 
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
+    res.status(500).json({ success: false, error: error.message });
   }
 };
 
 // 🔐 تسجيل الخروج
 authController.logout = async (req, res) => {
-  try {
-    // في التطبيق الحقيقي: إضافة التوكن للقائمة السوداء
-    res.json({
-      success: true,
-      message: 'تم تسجيل الخروج بنجاح'
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
+  res.json({ success: true, message: 'تم تسجيل الخروج بنجاح' });
 };
 
 // 🔍 التحقق من التوكن
 authController.verifyToken = async (req, res) => {
   try {
     const user = await User.findById(req.user.userId).select('-password');
-    
-    res.json({
-      success: true,
-      user: {
-        id: user._id,
-        phone: user.phone,
-        userType: user.userType,
-        isVerified: user.isVerified
-      }
-    });
+    res.json({ success: true, user });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
+    res.status(500).json({ success: false, error: error.message });
   }
 };
 
@@ -472,26 +299,12 @@ authController.verifyToken = async (req, res) => {
 authController.forgotPassword = async (req, res) => {
   try {
     const { phone } = req.body;
-
     const user = await User.findOne({ phone });
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        error: 'المستخدم غير موجود'
-      });
-    }
+    if (!user) return res.status(404).json({ success: false, error: 'المستخدم غير موجود' });
 
-    // في التطبيق الحقيقي: إرسال رمز إعادة تعيين عبر SMS
-    res.json({
-      success: true,
-      message: 'تم إرسال رمز إعادة تعيين كلمة المرور'
-    });
-
+    res.json({ success: true, message: 'تم إرسال رمز إعادة تعيين كلمة المرور' });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
+    res.status(500).json({ success: false, error: error.message });
   }
 };
 
@@ -499,36 +312,18 @@ authController.forgotPassword = async (req, res) => {
 authController.resetPassword = async (req, res) => {
   try {
     const { phone, newPassword, resetCode } = req.body;
-
     const user = await User.findOne({ phone });
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        error: 'المستخدم غير موجود'
-      });
-    }
+    if (!user) return res.status(404).json({ success: false, error: 'المستخدم غير موجود' });
 
-    // التحقق من رمز إعادة التعيين (مؤقت)
-    if (resetCode !== "123456") {
-      return res.status(400).json({
-        success: false,
-        error: 'رمز إعادة التعيين غير صحيح'
-      });
-    }
+    if (resetCode !== "123456") return res.status(400).json({ success: false, error: 'رمز إعادة التعيين غير صحيح' });
 
     user.password = newPassword;
     await user.save();
 
-    res.json({
-      success: true,
-      message: 'تم إعادة تعيين كلمة المرور بنجاح'
-    });
+    res.json({ success: true, message: 'تم إعادة تعيين كلمة المرور بنجاح' });
 
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
+    res.status(500).json({ success: false, error: error.message });
   }
 };
 

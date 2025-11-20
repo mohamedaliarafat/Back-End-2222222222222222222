@@ -1,8 +1,11 @@
 // controllers/webrtcController.js
 const activeCalls = new Map(); // تخزين المكالمات النشطة
 
+
+const webrtcController = {};
+
 // 🔄 معالجة إشارات WebRTC
-exports.handleWebRTCSignal = async (req, res) => {
+webrtcController.handleWebRTCSignal = async (req, res) => {
   try {
     const { from, to, signal, type, roomId } = req.body;
 
@@ -34,7 +37,7 @@ exports.handleWebRTCSignal = async (req, res) => {
 };
 
 // 🔍 جلب معلومات المكالمة
-exports.getCallInfo = async (req, res) => {
+webrtcController.getCallInfo = async (req, res) => {
   try {
     const { callId } = req.params;
 
@@ -60,7 +63,7 @@ exports.getCallInfo = async (req, res) => {
 };
 
 // ❌ إنهاء المكالمة
-exports.endCall = async (req, res) => {
+webrtcController.endCall = async (req, res) => {
   try {
     const { callId } = req.params;
     const { duration } = req.body;
@@ -83,3 +86,5 @@ exports.endCall = async (req, res) => {
     });
   }
 };
+
+module.exports = webrtcController;
