@@ -63,6 +63,4 @@ server.listen(PORT, () => {  // ⚠️ إصلاح: استخدام server بدل�
 
 require('./jobs/notificationJobs');
 
-
-
 module.exports = app;
