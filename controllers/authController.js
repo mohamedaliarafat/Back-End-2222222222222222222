@@ -3,65 +3,70 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const twilio = require('twilio');
 
-const authController = {};
-
-// إعداد Twilio
+// إنشاء عميل Twilio من متغيرات البيئة
 const client = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
 );
 
+const authController = {};
+
 authController.register = async (req, res) => {
   try {
     const { phone, password, userType, firebaseUid } = req.body;
 
+    // ✅ تحقق من الإدخال
     if (!phone || !password) {
-      return res.status(400).json({ success: false, error: 'رقم الهاتف وكلمة المرور مطلوبين' });
+      return res.status(400).json({
+        success: false,
+        error: 'رقم الهاتف وكلمة المرور مطلوبين',
+      });
     }
 
-    // التحقق من وجود المستخدم
+    // ✅ التحقق من وجود المستخدم مسبقًا
     let existingUser = await User.findOne({ phone });
     if (existingUser) {
       if (firebaseUid && existingUser.firebaseUid !== firebaseUid) {
         existingUser.firebaseUid = firebaseUid;
         await existingUser.save();
       }
-      return res.status(400).json({ success: false, error: 'رقم الهاتف مسجل مسبقاً' });
+      return res
+        .status(400)
+        .json({ success: false, error: 'رقم الهاتف مسجل مسبقاً' });
     }
 
-    // توليد OTP عشوائي 6 أرقام
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    // ✅ تنسيق الرقم الدولي بشكل صحيح
+    let formattedPhone;
+    if (phone.startsWith('+')) {
+      formattedPhone = phone;
+    } else {
+      formattedPhone = '+966' + phone.replace(/^0+/, ''); // مثال: السعودية
+    }
 
-      
-      let formattedPhone;
-
-      // إذا الرقم يبدأ بـ "+" فهو أصلاً بصيغة دولية
-      if (phone.startsWith('+')) {
-        formattedPhone = phone;
-      } else {
-        // أزل أي صفر بادئ ثم أضف رمز الدولة
-        formattedPhone = '+966' + phone.replace(/^0+/, '');
-      }
-
-      await client.messages.create({
-        body: `رمز التحقق الخاص بك هو: ${otp}`,
-        messagingServiceSid: process.env.TWILIO_MESSAGING_SERVICE_SID,
+    // ✅ إرسال رمز التحقق باستخدام Twilio Verify
+    const verification = await client.verify.v2
+      .services(process.env.TWILIO_VERIFY_SERVICE_SID)
+      .verifications.create({
         to: formattedPhone,
+        channel: 'sms',
       });
 
+    console.log(
+      `✅ تم إرسال OTP إلى ${formattedPhone} - SID: ${verification.sid}`
+    );
 
-    // فقط بعد نجاح الإرسال، نعمل حفظ للمستخدم
+    // ✅ حفظ المستخدم فقط بعد نجاح الإرسال
     const user = new User({
       phone,
       password,
       userType: userType || 'customer',
       firebaseUid: firebaseUid || null,
-      tempOtp: otp // لازم يكون موجود في الموديل أو تستخدم Redis
+      isVerified: false,
     });
 
     await user.save();
 
-    // إنشاء JWT
+    // ✅ إنشاء توكن JWT
     const token = jwt.sign(
       { userId: user._id, phone: user.phone },
       process.env.JWT_SECRET || 'fallback-secret',
@@ -70,23 +75,30 @@ authController.register = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: 'تم إرسال OTP بنجاح، تحقق من رقم هاتفك',
+      message: 'تم إرسال رمز التحقق بنجاح، يرجى إدخال الكود لتأكيد الحساب',
       token,
       user: {
         id: user._id,
         phone: user.phone,
         userType: user.userType,
-        isVerified: user.isVerified
-      }
+        isVerified: user.isVerified,
+      },
+    });
+  } catch (error) {
+    console.error('❌ Register error:', {
+      code: error.code,
+      message: error.message,
+      moreInfo: error.moreInfo,
     });
 
-  } catch (error) {
-    console.error('Register error:', error);
-    res.status(500).json({ success: false, error: 'حدث خطأ أثناء إرسال OTP، لم يتم تسجيل المستخدم' });
+    res.status(500).json({
+      success: false,
+      error:
+        'حدث خطأ أثناء إرسال رمز التحقق عبر Twilio، لم يتم تسجيل المستخدم',
+    });
   }
 };
 
-module.exports = authController;
 
 
 // 🔐 تسجيل الدخول
@@ -169,21 +181,26 @@ authController.verifyPhone = async (req, res) => {
     const user = await User.findOne({ phone });
     if (!user) return res.status(404).json({ success: false, error: 'المستخدم غير موجود' });
 
-    // كود مؤقت للاختبار
-    if (verificationCode !== "123456") {
+    // تحقق من Twilio
+    const verificationCheck = await client.verify
+      .services(process.env.TWILIO_VERIFY_SERVICE_SID)
+      .verificationChecks.create({ to: phone, code: verificationCode });
+
+    if (verificationCheck.status !== 'approved') {
       return res.status(400).json({ success: false, error: 'كود التحقق غير صحيح' });
     }
 
+    // إذا تم التحقق
     user.isVerified = true;
     await user.save();
 
     res.json({ success: true, message: 'تم التحقق من رقم الهاتف بنجاح' });
 
   } catch (error) {
+    console.error(error);
     res.status(500).json({ success: false, error: error.message });
   }
 };
-
 // 🔄 إعادة إرسال كود التحقق
 authController.resendVerification = async (req, res) => {
   try {

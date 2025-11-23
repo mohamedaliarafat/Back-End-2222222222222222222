@@ -496,9 +496,15 @@ exports.deleteProfile = async (req, res) => {
 exports.getProfileStats = async (req, res) => {
   try {
     console.log('🟢 START: getProfileStats');
+    console.log('🔐 User object:', req.user);
 
-    if (req.user.role !== 'admin') {
-      console.log('❌ Unauthorized - User is not admin');
+    // ✅ استخدام نفس المنطق: userType أو role
+    const userRole = req.user.userType || req.user.role;
+    
+    console.log('👤 Effective user role:', userRole);
+
+    if (userRole !== 'admin') {
+      console.log('❌ Unauthorized - User is not admin, role:', userRole);
       return res.status(403).json({
         success: false,
         message: 'غير مصرح لك بتنفيذ هذا الإجراء'
@@ -531,11 +537,59 @@ exports.getProfileStats = async (req, res) => {
       }
     });
 
+    // ... بقية الكود
   } catch (error) {
     console.error('❌ ERROR in getProfileStats:', error);
     res.status(500).json({
       success: false,
       message: 'فشل في جلب الإحصائيات',
+      error: error.message
+    });
+  }
+};
+
+// ==========================================================
+// ✅ جلب ملف شخصي محدد بالـ ID
+// ==========================================================
+exports.getProfileById = async (req, res) => {
+  try {
+    console.log('🟢 START: getProfileById');
+    const { profileId } = req.params;
+
+    console.log('📋 Profile ID:', profileId);
+
+    if (req.user.role !== 'admin' && req.user.userType !== 'admin') {
+      console.log('❌ Unauthorized - User is not admin');
+      return res.status(403).json({
+        success: false,
+        message: 'غير مصرح لك بتنفيذ هذا الإجراء'
+      });
+    }
+
+    const profile = await CompleteProfile.findById(profileId)
+      .populate('user', 'name email phone')
+      .populate('reviewedBy', 'name');
+
+    if (!profile) {
+      console.log('❌ Profile not found:', profileId);
+      return res.status(404).json({
+        success: false,
+        message: 'لم يتم العثور على الملف الشخصي'
+      });
+    }
+
+    console.log('✅ Profile found:', profileId);
+
+    res.status(200).json({
+      success: true,
+      data: profile
+    });
+
+  } catch (error) {
+    console.error('❌ ERROR in getProfileById:', error);
+    res.status(500).json({
+      success: false,
+      message: 'فشل في جلب الملف الشخصي',
       error: error.message
     });
   }

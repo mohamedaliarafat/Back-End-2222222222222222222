@@ -1,5 +1,5 @@
 // controllers/notificationController.js
-const Notification = require('../models/Notification');
+const Notification = require("../models/Notification");
 const User = require('../models/User');
 const notificationService = require('../services/notificationService'); // تم التصحيح
 

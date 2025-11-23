@@ -30,7 +30,7 @@ const UserSchema = new mongoose.Schema(
     // 👤 البيانات الشخصية
     profileImage: {
       type: String,
-      default: "https://a.top4top.io/p_356432nv81.png",
+      default: "https://c.top4top.io/p_3613ezehd1.png",
     },
     name: { 
       type: String, 

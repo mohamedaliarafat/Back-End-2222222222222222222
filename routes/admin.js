@@ -12,6 +12,13 @@ router.get('/dashboard',
   adminController.getAdminDashboard
 );
 
+
+router.get('/drivers', 
+  authMiddleware.authenticate, 
+  roleMiddleware.checkRole(['admin', 'monitoring', 'approval_supervisor']), 
+  adminController.getAllDrivers  // تأكد من وجود هذه الدالة في adminController
+);
+
 router.patch('/users/manage', 
   authMiddleware.authenticate, 
   roleMiddleware.checkRole(['admin']), 

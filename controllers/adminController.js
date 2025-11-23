@@ -103,6 +103,126 @@ adminController.getAdminDashboard = async (req, res) => {
   }
 };
 
+// 🚗 جلب جميع السائقين (لحل مشكلة الـ 404)
+adminController.getAllDrivers = async (req, res) => {
+  try {
+    // التحقق من الصلاحيات (يتم في middleware أيضاً)
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        error: 'غير مصرح بالوصول'
+      });
+    }
+
+    // جلب query parameters للبحث والتصفية
+    const { 
+      page = 1, 
+      limit = 10, 
+      search = '',
+      status = '',
+      sortBy = 'createdAt',
+      sortOrder = 'desc'
+    } = req.query;
+
+    // بناء query للبحث
+    let query = { userType: 'driver' };
+    
+    // البحث بالاسم أو البريد أو الهاتف
+    if (search) {
+      query.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { phone: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    // التصفية بالحالة
+    if (status) {
+      if (status === 'active') {
+        query.isActive = true;
+      } else if (status === 'inactive') {
+        query.isActive = false;
+      } else if (status === 'banned') {
+        query.isBanned = true;
+      }
+    }
+
+    // الحسابات المتوازية لأداء أفضل
+    const [drivers, totalDrivers, activeDrivers, inactiveDrivers] = await Promise.all([
+      // جلب السائقين مع pagination
+      User.find(query)
+        .select('-password -resetPasswordToken -resetPasswordExpires')
+        .sort({ [sortBy]: sortOrder === 'desc' ? -1 : 1 })
+        .limit(limit * 1)
+        .skip((page - 1) * limit)
+        .lean(),
+      
+      // الإحصائيات
+      User.countDocuments(query),
+      User.countDocuments({ userType: 'driver', isActive: true }),
+      User.countDocuments({ userType: 'driver', isActive: false })
+    ]);
+
+    // إضافة معلومات إضافية لكل سائق
+    const driversWithStats = await Promise.all(
+      drivers.map(async (driver) => {
+        const [completedOrders, totalEarnings] = await Promise.all([
+          Order.countDocuments({ driverId: driver._id, status: 'completed' }),
+          Order.aggregate([
+            { 
+              $match: { 
+                driverId: driver._id, 
+                status: 'completed' 
+              } 
+            },
+            { 
+              $group: { 
+                _id: null, 
+                total: { $sum: '$pricing.finalPrice' } 
+              } 
+            }
+          ])
+        ]);
+
+        return {
+          ...driver,
+          stats: {
+            completedOrders,
+            totalEarnings: totalEarnings[0]?.total || 0,
+            rating: driver.rating || 0
+          }
+        };
+      })
+    );
+
+    res.json({
+      success: true,
+      data: {
+        drivers: driversWithStats,
+        pagination: {
+          currentPage: parseInt(page),
+          totalPages: Math.ceil(totalDrivers / limit),
+          totalDrivers,
+          hasNextPage: page * limit < totalDrivers,
+          hasPrevPage: page > 1
+        },
+        stats: {
+          total: totalDrivers,
+          active: activeDrivers,
+          inactive: inactiveDrivers
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Get All Drivers Error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'حدث خطأ في جلب بيانات السائقين'
+    });
+  }
+};
+
 // 👥 إدارة المستخدمين (متقدمة)
 adminController.manageUsers = async (req, res) => {
   try {
