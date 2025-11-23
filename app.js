@@ -61,4 +61,6 @@ server.listen(PORT, () => {  // ⚠️ إصلاح: استخدام server بدل�
   console.log(`🚀 Server running on port ${PORT}`);
 });
 
+require('./jobs/notificationJobs');
+
 module.exports = app;
