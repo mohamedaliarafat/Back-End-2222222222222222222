@@ -1,6 +1,7 @@
 // jobs/notificationJobs.js
 const cron = require('node-cron');
 const notificationService = require('../services/notificationService');
+const Notification = require('../models/Notification'); // ⬅️ أضف هذا
 
 // تشغيل كل دقيقة للتحقق من الإشعارات المجدولة
 cron.schedule('* * * * *', async () => {
