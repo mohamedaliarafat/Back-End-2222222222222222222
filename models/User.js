@@ -72,6 +72,10 @@ const UserSchema = new mongoose.Schema(
       type: Date, 
       default: null 
     },
+    lastSeen: { 
+      type: Date, 
+      default: null 
+    }, 
 
     // 🔔 الإشعارات
     fcmToken: { 

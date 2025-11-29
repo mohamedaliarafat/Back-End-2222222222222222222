@@ -366,7 +366,7 @@ notificationSchema.statics.validateNotification = function(notificationData) {
   return true;
 };
 
-notificationSchema.statics.getUserNotifications = function(userId, userType, options = {}) {
+notificationSchema.statics.getUserNotifications = async function(userId, userType, options = {}) {
   const {
     page = 1,
     limit = 20,
@@ -377,6 +377,7 @@ notificationSchema.statics.getUserNotifications = function(userId, userType, opt
 
   const skip = (page - 1) * limit;
 
+  // 🔹 بناء فلتر البحث
   const filter = {
     isActive: true,
     $or: [
@@ -401,15 +402,31 @@ notificationSchema.statics.getUserNotifications = function(userId, userType, opt
     filter.priority = priority;
   }
 
-  return this.find(filter)
-    .sort({ createdAt: -1 })
-    .skip(skip)
-    .limit(limit)
-    .populate('user', 'name phone')
-    .populate('data.orderId', 'orderNumber status')
-    .populate('data.driverId', 'name phone')
-    .populate('data.customerId', 'name phone');
+  try {
+    // 🔹 البحث مع pagination و populate
+    const notifications = await this.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .populate('user', 'name phone')
+      .populate('data.orderId', 'orderNumber status')
+      .populate('data.driverId', 'name phone')
+      .populate('data.customerId', 'name phone')
+      .lean(); // plain JS objects
+
+    // 🔹 ضمان أن النتيجة Array
+    if (!Array.isArray(notifications)) {
+      return [];
+    }
+
+    return notifications;
+  } catch (err) {
+    console.error('❌ Error fetching user notifications:', err);
+    return [];
+  }
 };
+
+
 
 notificationSchema.statics.getTargetGroupsForUser = function(userType) {
   const groups = ['all'];

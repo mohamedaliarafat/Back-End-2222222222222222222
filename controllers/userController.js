@@ -338,6 +338,23 @@ userController.manageDrivers = async (req, res) => {
   }
 };
 
+userController.getDriversStatus = async (req, res) => {
+  try {
+    const drivers = await User.find({ userType: 'driver' })
+      .select('name phone isActive lastSeen');
+
+    res.json({
+      success: true,
+      drivers,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+};
+
 // ✅ الموافقة على ملف مستخدم
 userController.approveProfile = async (req, res) => {
   try {
@@ -486,6 +503,8 @@ const sendDriverStatusNotification = async (driver, action, reason) => {
     console.error('خطأ في إرسال إشعار حالة السائق:', error);
   }
 };
+
+
 
 const sendProfileStatusNotification = async (userId, status, rejectionReason) => {
   try {

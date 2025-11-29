@@ -522,7 +522,8 @@ exports.updateOnlineStatus = async (req, res) => {
     }
 
     await User.findByIdAndUpdate(driverId, {
-      isActive: isOnline
+      isActive: isOnline,
+      lastSeen: new Date()
     });
 
     res.json({

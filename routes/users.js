@@ -16,6 +16,14 @@ router.get('/my-products', authMiddleware.authenticate, userController.getMyProd
 // 🚗 إدارة السائقين
 router.patch('/drivers/manage', authMiddleware.authenticate, roleMiddleware.checkRole(['admin', 'approval_supervisor']), userController.manageDrivers);
 
+router.get(
+  '/drivers/status',
+  authMiddleware.authenticate,
+  roleMiddleware.checkRole(['admin', 'monitoring']),
+  userController.getDriversStatus
+);
+
+
 // 📋 المسارات ذات المعلمات (يجب أن تكون في النهاية)
 router.get('/:userId', authMiddleware.authenticate, userController.getUser);
 router.put('/:userId', authMiddleware.authenticate, userController.updateUser);
