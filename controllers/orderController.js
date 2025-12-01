@@ -1419,76 +1419,58 @@ exports.finalApproveOrder = async (req, res) => {
   }
 };
 
-// 🚗 تخصيص سائق لطلب الوقود
+// controllers/orderController.js
 exports.assignOrderDriver = async (req, res) => {
   try {
     const { orderId } = req.params;
-    const { driverId } = req.body;
-    const userId = req.user.userId;
+    const { driverId, assignedDriverName, assignedToDriverAt, status } = req.body;
 
-    // التحقق من الصلاحية (الإدمن والمشرفين)
-    if (!['admin', 'approval_supervisor'].includes(req.user.userType)) {
-      return res.status(403).json({
-        success: false,
-        error: 'غير مسموح بتخصيص السائقين'
-      });
-    }
+    const order = await Order.findById(orderId);
+    if (!order) return res.status(404).json({ success: false, error: "الطلب غير موجود" });
 
-    // التحقق من وجود السائق
-    const driver = await User.findOne({ 
-      _id: driverId, 
-      userType: 'driver',
-      isActive: true 
+    // تحديث البيانات
+    order.driverId = driverId;
+    if (status) order.status = status; // ← مهم: يسمح بتغيير الحالة مباشرة
+    if (assignedToDriverAt) order.assignedToDriverAt = new Date(assignedToDriverAt);
+
+    // تتبع
+    order.tracking.push({
+      status: status || "assigned_to_driver",
+      note: `تم تعيين الطلب للسائق: ${assignedDriverName || 'الإدارة'}`,
+      timestamp: new Date(),
     });
 
-    if (!driver) {
-      return res.status(404).json({
-        success: false,
-        error: 'السائق غير موجود أو غير مفعل'
-      });
+    await order.save();
+
+    // إرسال FCM للسائق
+    const driver = await User.findById(driverId).select('fcmToken name');
+    if (driver?.fcmToken) {
+      await sendFCMNotification(
+        driver.fcmToken,
+        "طلب وقود جديد مُعيَّن لك!",
+        `طلب #${order.orderNumber} - ${order.fuelDetails.fuelLiters} لتر ${order.fuelDetails.fuelTypeName}`,
+        {
+          type: "new_assigned_order",
+          orderId: order._id.toString(),
+          orderNumber: order.orderNumber,
+        }
+      );
     }
 
-    const updateData = {
-      driverId,
-      status: 'assigned_to_driver',
-      assignedToDriverAt: new Date()
-    };
-
-    const order = await Order.findOneAndUpdate(
-      { _id: orderId, serviceType: 'fuel' }, 
-      updateData, 
-      { new: true }
-    )
-    .populate('customerId', 'name phone')
-    .populate('driverId', 'name phone');
-
-    if (!order) {
-      return res.status(404).json({
-        success: false,
-        error: 'طلب الوقود غير موجود'
-      });
-    }
-
-    // إرسال إشعار للسائق
-    await sendDriverAssignmentNotification(order, driver);
-
-    console.log('✅ تم تخصيص سائق لطلب الوقود:', {
-      orderId: order._id,
-      driverId: order.driverId._id
-    });
+    // رجّع الطلب كامل بعد الـ populate
+    const populatedOrder = await Order.findById(orderId)
+      .populate('customerId', 'name phone')
+      .populate('driverId', 'name phone');
 
     res.json({
       success: true,
-      message: 'تم تخصيص السائق للطلب بنجاح',
-      order
+      message: "تم تعيين السائق وإرسال الإشعار بنجاح",
+      order: populatedOrder.toObject()
     });
 
   } catch (error) {
-    console.error('❌ خطأ في تخصيص سائق لطلب الوقود:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
+      console.error("assignOrderDriver error:", error);
+      res.status(500).json({ success: false, error: error.message });
   }
 };
 

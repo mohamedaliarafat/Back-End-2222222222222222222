@@ -1,21 +1,15 @@
-// controllers/fuelTransferController.js
 const FuelTransfer = require('../models/FuelTransfer');
 const User = require('../models/User');
 const Notification = require('../models/Notification');
 const { uploadFileToFirebase } = require('../services/firebaseStorage');
 const path = require('path');
+const mongoose = require('mongoose'); // ⬅️ أضف هذا
 
 const fuelTransferController = {};
 
-
-
-// 📝 إنشاء طلب نقل وقود جديد
 fuelTransferController.createRequest = async (req, res) => {
   try {
     console.log('📦 استلام طلب نقل وقود جديد:', req.body);
-    console.log('🎯 تم استدعاء createRequest بنجاح!');
-    console.log('📧 المستخدم:', req.user);
-    console.log('📦 البيانات:', req.body);
     
     const {
       company,
@@ -29,7 +23,7 @@ fuelTransferController.createRequest = async (req, res) => {
     if (!company || !quantity || !paymentMethod || !deliveryLocation) {
       return res.status(400).json({
         success: false,
-        error: 'جميع الحقول مطلوبة: الشركة، الكمية، طريقة الدفع، موقع التسليم'
+        error: 'جميع الحقول مطلوبة'
       });
     }
 
@@ -54,7 +48,7 @@ fuelTransferController.createRequest = async (req, res) => {
     if (!pricePerLiter) {
       return res.status(400).json({
         success: false,
-        error: 'الشركة غير مدعومة. الشركات المتاحة: إنرجكس، نهل، بيتروجين، ارامكو'
+        error: 'الشركة غير مدعومة'
       });
     }
 
@@ -67,15 +61,10 @@ fuelTransferController.createRequest = async (req, res) => {
     // ✅ إنشاء رقم طلب فريد
     const orderNumber = `FT${Date.now()}${Math.random().toString(36).substr(2, 5)}`.toUpperCase();
 
-    // ✅ إنشاء الطلب (بيانات تجريبية مؤقتة)
-    const fuelTransfer = {
-      _id: `mock_${Date.now()}`,
+    // ✅ إنشاء طلب حقيقي في MongoDB
+    const fuelTransfer = new FuelTransfer({
       orderNumber,
-      customer: {
-        _id: req.user.id,
-        name: req.user.name || 'مستخدم',
-        phone: req.user.phone || 'غير محدد'
-      },
+      customer: req.user.id,
       company,
       quantity: quantityNum,
       pricing: {
@@ -94,22 +83,20 @@ fuelTransferController.createRequest = async (req, res) => {
         address: deliveryLocation,
         coordinates: coordinates || {}
       },
-      status: 'pending',
-      createdAt: new Date(),
-      updatedAt: new Date()
-    };
+      status: 'pending'
+    });
 
-    console.log('✅ تم إنشاء الطلب التجريبي:', fuelTransfer);
-
-    // ✅ محاكاة حفظ في قاعدة البيانات
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    // ✅ حفظ الطلب في قاعدة البيانات
+    const savedOrder = await fuelTransfer.save();
+    
+    console.log('✅ تم حفظ الطلب في قاعدة البيانات:', savedOrder._id);
 
     res.status(201).json({
       success: true,
       message: 'تم إنشاء طلب نقل الوقود بنجاح',
       data: {
-        order: fuelTransfer,
-        orderNumber: fuelTransfer.orderNumber
+        order: savedOrder,
+        orderNumber: savedOrder.orderNumber
       }
     });
 
@@ -122,7 +109,7 @@ fuelTransferController.createRequest = async (req, res) => {
   }
 };
 
-// 📤 رفع فاتورة أرامكو
+// 📤 رفع فاتورة أرامكو - نسخة حقيقية
 fuelTransferController.uploadAramcoInvoice = async (req, res) => {
   try {
     const { orderId } = req.params;
@@ -136,25 +123,38 @@ fuelTransferController.uploadAramcoInvoice = async (req, res) => {
       });
     }
 
-    // ✅ محاكاة رفع الملف
-    const fileUrl = `https://firebasestorage.googleapis.com/v0/b/your-app.appspot.com/o/invoices%2F${orderId}%2F${req.file.originalname}?alt=media`;
+    // ✅ رفع الملف إلى Firebase Storage (حقيقي)
+    const fileUrl = await uploadFileToFirebase(
+      req.file,
+      `invoices/${orderId}/${req.file.originalname}`
+    );
 
-    // ✅ تحديث الطلب (بيانات تجريبية)
-    const updatedOrder = {
-      _id: orderId,
-      documents: {
-        aramcoInvoice: {
-          filename: req.file.filename,
-          originalName: req.file.originalname,
-          url: fileUrl,
-          uploadedAt: new Date()
+    // ✅ تحديث الطلب في MongoDB
+    const updatedOrder = await FuelTransfer.findByIdAndUpdate(
+      orderId,
+      {
+        $set: {
+          'documents.aramcoInvoice': {
+            filename: req.file.filename,
+            originalName: req.file.originalname,
+            url: fileUrl,
+            uploadedAt: new Date()
+          },
+          status: 'under_review',
+          updatedAt: new Date()
         }
       },
-      status: 'under_review',
-      updatedAt: new Date()
-    };
+      { new: true }
+    );
 
-    console.log('✅ تم رفع الفاتورة بنجاح:', updatedOrder);
+    if (!updatedOrder) {
+      return res.status(404).json({
+        success: false,
+        error: 'الطلب غير موجود'
+      });
+    }
+
+    console.log('✅ تم رفع الفاتورة بنجاح:', orderId);
 
     res.json({
       success: true,
@@ -174,7 +174,7 @@ fuelTransferController.uploadAramcoInvoice = async (req, res) => {
   }
 };
 
-// 👁️ جلب طلبات المستخدم
+// 👁️ جلب طلبات المستخدم الحقيقية
 fuelTransferController.getUserRequests = async (req, res) => {
   try {
     const { 
@@ -183,125 +183,40 @@ fuelTransferController.getUserRequests = async (req, res) => {
       status 
     } = req.query;
 
-    console.log('📥 جلب طلبات المستخدم:', { userId: req.user.id, status, page, limit });
+    console.log('📥 جلب طلبات المستخدم:', { userId: req.user.id });
 
-    // ✅ بيانات تجريبية للطلبات
-    const mockOrders = [
-      {
-        _id: 'mock_001',
-        orderNumber: 'FT001',
-        customer: {
-          _id: req.user.id,
-          name: req.user.name || 'مستخدم',
-          phone: req.user.phone || 'غير محدد'
-        },
-        company: 'نهل',
-        quantity: 5,
-        pricing: {
-          pricePerLiter: 2.25,
-          subtotal: 11.25,
-          deliveryFee: 25,
-          vat: 1.69,
-          totalAmount: 37.94,
-          finalPrice: 37.94
-        },
-        payment: {
-          method: 'stripe',
-          status: 'pending'
-        },
-        deliveryLocation: {
-          address: 'RHSA4979 - حي السليمانية - الرياض',
-          coordinates: {}
-        },
-        status: 'pending',
-        createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
-        updatedAt: new Date(Date.now() - 1 * 60 * 60 * 1000)
-      },
-      {
-        _id: 'mock_002',
-        orderNumber: 'FT002',
-        customer: {
-          _id: req.user.id,
-          name: req.user.name || 'مستخدم',
-          phone: req.user.phone || 'غير محدد'
-        },
-        company: 'بيتروجين',
-        quantity: 58,
-        pricing: {
-          pricePerLiter: 2.32,
-          subtotal: 134.56,
-          deliveryFee: 25,
-          vat: 20.18,
-          totalAmount: 179.74,
-          finalPrice: 179.74
-        },
-        payment: {
-          method: 'card',
-          status: 'paid'
-        },
-        deliveryLocation: {
-          address: 'حي النخيل - الرياض',
-          coordinates: {}
-        },
-        status: 'completed',
-        createdAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
-        updatedAt: new Date(Date.now() - 12 * 60 * 60 * 1000),
-        completedAt: new Date(Date.now() - 11 * 60 * 60 * 1000)
-      },
-      {
-        _id: 'mock_003',
-        orderNumber: 'FT003',
-        customer: {
-          _id: req.user.id,
-          name: req.user.name || 'مستخدم', 
-          phone: req.user.phone || 'غير محدد'
-        },
-        company: 'ارامكو',
-        quantity: 100,
-        pricing: {
-          pricePerLiter: 2.15,
-          subtotal: 215,
-          deliveryFee: 25,
-          vat: 32.25,
-          totalAmount: 272.25,
-          finalPrice: 272.25
-        },
-        payment: {
-          method: 'stripe',
-          status: 'paid'
-        },
-        deliveryLocation: {
-          address: 'حي العليا - الرياض',
-          coordinates: {}
-        },
-        status: 'approved',
-        createdAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000),
-        updatedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000)
-      }
-    ];
-
-    // ✅ تصفية حسب الحالة
-    let filteredOrders = mockOrders;
+    // ✅ بناء query
+    const query = { customer: req.user.id };
+    
+    // ✅ إضافة فلتر الحالة
     if (status && status !== 'all') {
-      filteredOrders = mockOrders.filter(order => order.status === status);
+      query.status = status;
     }
 
-    // ✅ تطبيق الباجينيشين
-    const startIndex = (page - 1) * limit;
-    const endIndex = startIndex + parseInt(limit);
-    const paginatedOrders = filteredOrders.slice(startIndex, endIndex);
+    // ✅ حساب pagination
+    const skip = (page - 1) * limit;
 
-    console.log(`✅ تم جلب ${paginatedOrders.length} طلب من ${filteredOrders.length}`);
+    // ✅ جلب الطلبات من MongoDB مع populate للمستخدم
+    const requests = await FuelTransfer.find(query)
+      .populate('customer', 'name phone')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    // ✅ جلب العدد الكلي للطلبات
+    const total = await FuelTransfer.countDocuments(query);
+
+    console.log(`✅ تم جلب ${requests.length} طلب من ${total}`);
 
     res.json({
       success: true,
       data: {
-        requests: paginatedOrders,
+        requests,
         pagination: {
           page: parseInt(page),
           limit: parseInt(limit),
-          total: filteredOrders.length,
-          pages: Math.ceil(filteredOrders.length / limit)
+          total,
+          pages: Math.ceil(total / limit)
         }
       }
     });
@@ -315,75 +230,42 @@ fuelTransferController.getUserRequests = async (req, res) => {
   }
 };
 
-// 📋 جلب جميع الطلبات (للأدمن والمشرفين)
+// 📋 جلب جميع الطلبات (للأدمن والمشرفين) - نسخة حقيقية
 fuelTransferController.getAllRequests = async (req, res) => {
   try {
     console.log('📋 جلب جميع الطلبات للمشرف:', req.user.userType);
 
-    // ✅ استخدام نفس البيانات التجريبية مع بعض الإضافات
-    const mockOrders = [
-      {
-        _id: 'mock_001',
-        orderNumber: 'FT001',
-        customer: {
-          _id: 'user_001',
-          name: 'أحمد محمد',
-          phone: '0551234567',
-          profileImage: null
-        },
-        company: 'نهل',
-        quantity: 5,
-        pricing: {
-          pricePerLiter: 2.25,
-          subtotal: 11.25,
-          deliveryFee: 25,
-          vat: 1.69,
-          totalAmount: 37.94,
-          finalPrice: 37.94
-        },
-        status: 'pending',
-        createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
-        deliveryLocation: {
-          address: 'RHSA4979 - حي السليمانية - الرياض'
-        }
-      },
-      {
-        _id: 'mock_002', 
-        orderNumber: 'FT002',
-        customer: {
-          _id: 'user_002',
-          name: 'سارة عبدالله',
-          phone: '0557654321',
-          profileImage: null
-        },
-        company: 'بيتروجين',
-        quantity: 58,
-        pricing: {
-          pricePerLiter: 2.32,
-          subtotal: 134.56,
-          deliveryFee: 25,
-          vat: 20.18,
-          totalAmount: 179.74,
-          finalPrice: 179.74
-        },
-        status: 'completed',
-        createdAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
-        completedAt: new Date(Date.now() - 23 * 60 * 60 * 1000),
-        deliveryLocation: {
-          address: 'حي النخيل - الرياض'
-        }
-      }
-    ];
+    const { page = 1, limit = 10, status } = req.query;
+
+    // ✅ بناء query
+    const query = {};
+    if (status && status !== 'all') {
+      query.status = status;
+    }
+
+    // ✅ حساب pagination
+    const skip = (page - 1) * limit;
+
+    // ✅ جلب الطلبات من MongoDB مع populate للمستخدم
+    const requests = await FuelTransfer.find(query)
+      .populate('customer', 'name phone profileImage')
+      .populate('driver', 'name phone')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    // ✅ جلب العدد الكلي
+    const total = await FuelTransfer.countDocuments(query);
 
     res.json({
       success: true,
       data: {
-        requests: mockOrders,
+        requests,
         pagination: {
-          page: 1,
-          limit: 10,
-          total: mockOrders.length,
-          pages: 1
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / limit)
         }
       }
     });
@@ -397,7 +279,7 @@ fuelTransferController.getAllRequests = async (req, res) => {
   }
 };
 
-// ✅ الموافقة على الطلب (للمشرفين)
+// ✅ الموافقة على الطلب (للمشرفين) - نسخة حقيقية
 fuelTransferController.approveRequest = async (req, res) => {
   try {
     const { orderId } = req.params;
@@ -413,25 +295,33 @@ fuelTransferController.approveRequest = async (req, res) => {
       });
     }
 
-    // ✅ محاكاة تحديث الطلب
-    const updatedOrder = {
-      _id: orderId,
-      status: 'approved',
-      pricing: {
-        finalPrice: finalPrice || 37.94,
-        priceVisible: true,
-        priceSetBy: req.user.id,
-        priceSetAt: new Date()
+    // ✅ تحديث الطلب في MongoDB
+    const updatedOrder = await FuelTransfer.findByIdAndUpdate(
+      orderId,
+      {
+        $set: {
+          status: 'approved',
+          'pricing.finalPrice': finalPrice,
+          'pricing.priceVisible': true,
+          'pricing.priceSetBy': req.user.id,
+          'pricing.priceSetAt': new Date(),
+          'review.reviewedBy': req.user.id,
+          'review.reviewedAt': new Date(),
+          'review.notes': notes || '',
+          updatedAt: new Date()
+        }
       },
-      review: {
-        reviewedBy: req.user.id,
-        reviewedAt: new Date(),
-        notes: notes || ''
-      },
-      updatedAt: new Date()
-    };
+      { new: true }
+    ).populate('customer', 'name phone');
 
-    console.log('✅ تمت الموافقة على الطلب:', updatedOrder);
+    if (!updatedOrder) {
+      return res.status(404).json({
+        success: false,
+        error: 'الطلب غير موجود'
+      });
+    }
+
+    console.log('✅ تمت الموافقة على الطلب:', orderId);
 
     res.json({
       success: true,
@@ -450,7 +340,7 @@ fuelTransferController.approveRequest = async (req, res) => {
   }
 };
 
-// ❌ رفض الطلب (للمشرفين)
+// ❌ رفض الطلب (للمشرفين) - نسخة حقيقية
 fuelTransferController.rejectRequest = async (req, res) => {
   try {
     const { orderId } = req.params;
@@ -472,19 +362,29 @@ fuelTransferController.rejectRequest = async (req, res) => {
       });
     }
 
-    // ✅ محاكاة تحديث الطلب
-    const updatedOrder = {
-      _id: orderId,
-      status: 'rejected',
-      review: {
-        reviewedBy: req.user.id,
-        reviewedAt: new Date(),
-        rejectionReason
+    // ✅ تحديث الطلب في MongoDB
+    const updatedOrder = await FuelTransfer.findByIdAndUpdate(
+      orderId,
+      {
+        $set: {
+          status: 'rejected',
+          'review.reviewedBy': req.user.id,
+          'review.reviewedAt': new Date(),
+          'review.rejectionReason': rejectionReason,
+          updatedAt: new Date()
+        }
       },
-      updatedAt: new Date()
-    };
+      { new: true }
+    );
 
-    console.log('✅ تم رفض الطلب:', updatedOrder);
+    if (!updatedOrder) {
+      return res.status(404).json({
+        success: false,
+        error: 'الطلب غير موجود'
+      });
+    }
+
+    console.log('✅ تم رفض الطلب:', orderId);
 
     res.json({
       success: true,
@@ -503,7 +403,7 @@ fuelTransferController.rejectRequest = async (req, res) => {
   }
 };
 
-// 🚗 تعيين سائق (للأدمن)
+// 🚗 تعيين سائق (للأدمن) - نسخة حقيقية
 fuelTransferController.assignDriver = async (req, res) => {
   try {
     const { orderId } = req.params;
@@ -518,20 +418,41 @@ fuelTransferController.assignDriver = async (req, res) => {
       });
     }
 
-    // ✅ محاكاة تعيين السائق
-    const updatedOrder = {
-      _id: orderId,
-      driver: {
-        _id: driverId,
-        name: 'سائق تجريبي',
-        phone: '0550000000'
-      },
-      status: 'driver_assigned',
-      assignedAt: new Date(),
-      updatedAt: new Date()
-    };
+    // ✅ التحقق من وجود السائق
+    const driver = await User.findById(driverId);
+    if (!driver || driver.userType !== 'driver') {
+      return res.status(400).json({
+        success: false,
+        error: 'السائق غير موجود أو غير صالح'
+      });
+    }
 
-    console.log('✅ تم تعيين السائق:', updatedOrder);
+    // ✅ تحديث الطلب في MongoDB
+    const updatedOrder = await FuelTransfer.findByIdAndUpdate(
+      orderId,
+      {
+        $set: {
+          driver: {
+            _id: driverId,
+            name: driver.name,
+            phone: driver.phone
+          },
+          status: 'driver_assigned',
+          assignedAt: new Date(),
+          updatedAt: new Date()
+        }
+      },
+      { new: true }
+    ).populate('driver', 'name phone');
+
+    if (!updatedOrder) {
+      return res.status(404).json({
+        success: false,
+        error: 'الطلب غير موجود'
+      });
+    }
+
+    console.log('✅ تم تعيين السائق:', orderId);
 
     res.json({
       success: true,
@@ -551,7 +472,7 @@ fuelTransferController.assignDriver = async (req, res) => {
   }
 };
 
-// 🔄 تحديث حالة الطلب (للسائقين والأدمن)
+// 🔄 تحديث حالة الطلب (للسائقين والأدمن) - نسخة حقيقية
 fuelTransferController.updateStatus = async (req, res) => {
   try {
     const { orderId } = req.params;
@@ -574,9 +495,8 @@ fuelTransferController.updateStatus = async (req, res) => {
       });
     }
 
-    // ✅ محاكاة تحديث الحالة
-    const updatedOrder = {
-      _id: orderId,
+    // ✅ بناء بيانات التحديث
+    const updateData = {
       status,
       updatedAt: new Date()
     };
@@ -584,28 +504,43 @@ fuelTransferController.updateStatus = async (req, res) => {
     // ✅ إضافة التوقيتات حسب الحالة
     switch (status) {
       case 'fueling_from_aramco':
-        updatedOrder.fuelingStartedAt = new Date();
+        updateData.fuelingStartedAt = new Date();
         break;
       case 'out_for_delivery':
-        updatedOrder.outForDeliveryAt = new Date();
+        updateData.outForDeliveryAt = new Date();
         break;
       case 'arrived_at_location':
-        updatedOrder.arrivedAt = new Date();
+        updateData.arrivedAt = new Date();
         break;
       case 'unloading':
-        updatedOrder.unloadingStartedAt = new Date();
+        updateData.unloadingStartedAt = new Date();
         break;
       case 'completed':
-        updatedOrder.completedAt = new Date();
-        updatedOrder.payment = { status: 'paid', paidAt: new Date() };
+        updateData.completedAt = new Date();
+        updateData['payment.status'] = 'paid';
+        updateData['payment.paidAt'] = new Date();
         break;
     }
 
     if (notes) {
-      updatedOrder.review = { notes };
+      updateData['review.notes'] = notes;
     }
 
-    console.log('✅ تم تحديث حالة الطلب:', updatedOrder);
+    // ✅ تحديث الطلب في MongoDB
+    const updatedOrder = await FuelTransfer.findByIdAndUpdate(
+      orderId,
+      { $set: updateData },
+      { new: true }
+    );
+
+    if (!updatedOrder) {
+      return res.status(404).json({
+        success: false,
+        error: 'الطلب غير موجود'
+      });
+    }
+
+    console.log('✅ تم تحديث حالة الطلب:', orderId);
 
     res.json({
       success: true,
@@ -624,28 +559,54 @@ fuelTransferController.updateStatus = async (req, res) => {
   }
 };
 
-// 📊 إحصائيات الطلبات
+// 📊 إحصائيات الطلبات - نسخة حقيقية
 fuelTransferController.getStats = async (req, res) => {
   try {
     const { period = 'month' } = req.query;
 
     console.log('📊 جلب الإحصائيات للفترة:', period);
 
-    // ✅ إحصائيات تجريبية
+    // ✅ جلب الإحصائيات الحقيقية من MongoDB
+    const total = await FuelTransfer.countDocuments();
+    const pending = await FuelTransfer.countDocuments({ status: 'pending' });
+    const completed = await FuelTransfer.countDocuments({ status: 'completed' });
+
+    // ✅ جلب الإيرادات من الطلبات المكتملة
+    const completedOrders = await FuelTransfer.find({ status: 'completed' });
+    const revenue = completedOrders.reduce((sum, order) => {
+      return sum + (order.pricing.finalPrice || order.pricing.totalAmount || 0);
+    }, 0);
+
+    // ✅ جلب إحصائيات الشركات
+    const companyStats = await FuelTransfer.aggregate([
+      {
+        $group: {
+          _id: '$company',
+          count: { $sum: 1 },
+          revenue: {
+            $sum: {
+              $cond: [
+                { $eq: ['$status', 'completed'] },
+                { $ifNull: ['$pricing.finalPrice', '$pricing.totalAmount'] },
+                0
+              ]
+            }
+          }
+        }
+      },
+      { $sort: { count: -1 } }
+    ]);
+
     const stats = {
-      total: 15,
-      pending: 3,
-      completed: 8,
-      revenue: 1850.50,
-      companies: [
-        { _id: 'نهل', count: 6, revenue: 750.25 },
-        { _id: 'بيتروجين', count: 5, revenue: 650.75 },
-        { _id: 'ارامكو', count: 4, revenue: 449.50 }
-      ],
+      total,
+      pending,
+      completed,
+      revenue: parseFloat(revenue.toFixed(2)),
+      companies: companyStats,
       period
     };
 
-    console.log('✅ تم جلب الإحصائيات:', stats);
+    console.log('✅ تم جلب الإحصائيات الحقيقية:', stats);
 
     res.json({
       success: true,
@@ -657,6 +618,98 @@ fuelTransferController.getStats = async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'حدث خطأ في جلب الإحصائيات: ' + error.message
+    });
+  }
+};
+
+// ✅ دالة جديدة: الحصول على تفاصيل طلب معين
+fuelTransferController.getRequestDetails = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+
+    console.log('📋 جلب تفاصيل الطلب:', orderId);
+
+    const order = await FuelTransfer.findById(orderId)
+      .populate('customer', 'name phone')
+      .populate('driver', 'name phone')
+      .populate('pricing.priceSetBy', 'name')
+      .populate('review.reviewedBy', 'name');
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        error: 'الطلب غير موجود'
+      });
+    }
+
+    console.log('✅ تم جلب تفاصيل الطلب:', orderId);
+
+    res.json({
+      success: true,
+      data: {
+        order
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get Request Details Error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'حدث خطأ في جلب تفاصيل الطلب: ' + error.message
+    });
+  }
+};
+
+// ✅ دالة جديدة: إلغاء الطلب
+fuelTransferController.cancelRequest = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+
+    console.log('🗑️ إلغاء الطلب:', orderId);
+
+    // ✅ التحقق من أن المستخدم هو صاحب الطلب
+    const order = await FuelTransfer.findById(orderId);
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        error: 'الطلب غير موجود'
+      });
+    }
+
+    if (order.customer.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        error: 'ليس لديك صلاحية لإلغاء هذا الطلب'
+      });
+    }
+
+    // ✅ إلغاء الطلب (تحديث الحالة)
+    const updatedOrder = await FuelTransfer.findByIdAndUpdate(
+      orderId,
+      {
+        $set: {
+          status: 'cancelled',
+          updatedAt: new Date()
+        }
+      },
+      { new: true }
+    );
+
+    console.log('✅ تم إلغاء الطلب:', orderId);
+
+    res.json({
+      success: true,
+      message: 'تم إلغاء الطلب بنجاح',
+      data: {
+        order: updatedOrder
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Cancel Request Error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'حدث خطأ في إلغاء الطلب: ' + error.message
     });
   }
 };
