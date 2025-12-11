@@ -77,11 +77,11 @@ const UserSchema = new mongoose.Schema(
       default: null 
     }, 
 
-    // 🔔 الإشعارات
-    fcmToken: { 
-      type: String, 
-      default: "" 
-    },
+    fcmTokens: {
+  type: [String],
+  default: []
+},
+
 
     // 📋 الملف الشخصي الكامل (للسائقين)
     completeProfile: { 

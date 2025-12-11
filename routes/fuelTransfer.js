@@ -15,12 +15,20 @@ router.post(
   fuelTransferController.createRequest
 );
 
-router.post(
-  '/:orderId/upload-invoice',
+// router.put(
+//   '/:orderId/upload-invoice',
+//   checkRole(['customer']),
+//   upload.single('invoice'), // ⭐ إضافة هذا السطر
+//   fuelTransferController.uploadAramcoInvoice
+// );
+
+router.put(
+  '/:orderId/update-invoice-url', // ✅ هذا للرابط فقط
   checkRole(['customer']),
-  upload.single('invoice'),
-  fuelTransferController.uploadAramcoInvoice
+  fuelTransferController.uploadInvoiceUrl // ✅ دالة جديدة
 );
+
+
 
 router.get(
   '/my-requests',

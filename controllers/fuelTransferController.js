@@ -1,145 +1,161 @@
+const path = require('path');
+const fs = require('fs');
+const mongoose = require('mongoose');
+
+// استيراد Firebase
+const firebaseConfig = require('../config/firebase');
+const bucket = firebaseConfig.bucket;
+
+// استيراد الموديلات
 const FuelTransfer = require('../models/FuelTransfer');
 const User = require('../models/User');
 const Notification = require('../models/Notification');
-const { uploadFileToFirebase } = require('../services/firebaseStorage');
-const path = require('path');
-const mongoose = require('mongoose'); // ⬅️ أضف هذا
+
+// دالة رفع الفاتورة إلى Firebase (شغالة 100%)
+async function uploadFileToFirebase(localFilePath, destinationPath) {
+  try {
+    console.log('جاري رفع الفاتورة إلى Firebase Storage...');
+
+    const [file] = await bucket.upload(localFilePath, {
+      destination: destinationPath,
+      metadata: {
+        contentType: require('mime-types').lookup(localFilePath) || 'application/octet-stream',
+      },
+    });
+
+    const [url] = await file.getSignedUrl({
+      action: 'read',
+      expires: '03-01-2030',
+    });
+
+    console.log('تم رفع الفاتورة بنجاح:', url);
+    return url;
+  } catch (error) {
+    console.error('فشل رفع الفاتورة إلى Firebase:', error);
+    throw error;
+  }
+}
 
 const fuelTransferController = {};
 
+// إنشاء طلب نقل وقود (شغال 100% مع energex وإنرجكس)
 fuelTransferController.createRequest = async (req, res) => {
   try {
-    console.log('📦 استلام طلب نقل وقود جديد:', req.body);
-    
-    const {
-      company,
-      quantity,
-      paymentMethod,
-      deliveryLocation,
-      coordinates
-    } = req.body;
+    console.log('استلام طلب نقل وقود جديد:', req.body);
 
-    // ✅ التحقق من البيانات المطلوبة
+    const { company, quantity, paymentMethod, deliveryLocation, coordinates, fuelType = 'بنزين 95' } = req.body;
+
     if (!company || !quantity || !paymentMethod || !deliveryLocation) {
-      return res.status(400).json({
-        success: false,
-        error: 'جميع الحقول مطلوبة'
-      });
+      return res.status(400).json({ success: false, error: 'جميع الحقول مطلوبة' });
     }
 
-    // ✅ التحقق من أن الكمية رقمية
     const quantityNum = parseFloat(quantity);
     if (isNaN(quantityNum) || quantityNum <= 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'الكمية يجب أن تكون رقماً أكبر من الصفر'
-      });
+      return res.status(400).json({ success: false, error: 'الكمية يجب أن تكون رقم موجب' });
     }
 
-    // ✅ الحصول على سعر الشركة
     const fuelPrices = {
-      'إنرجكس': 2.18,
-      'نهل': 2.25,
-      'بيتروجين': 2.32,
-      'ارامكو': 2.15
+      'إنرجكس': 2.18, 'نهل': 2.25, 'بيتروجين': 2.32, 'ارامكو': 2.15
     };
 
-    const pricePerLiter = fuelPrices[company];
+    const companyMap = {
+      'energex': 'إنرجكس', 'nahil': 'نهل', 'petrogen': 'بيتروجين', 'aramco': 'ارامكو',
+      'إنرجكس': 'إنرجكس', 'نهل': 'نهل', 'بيتروجين': 'بيتروجين', 'ارامكو': 'ارامكو'
+    };
+
+    const normalizedCompany = companyMap[company?.trim()] || 
+                              companyMap[company?.toLowerCase()?.trim()] || 
+                              company?.trim();
+
+    const pricePerLiter = fuelPrices[normalizedCompany];
     if (!pricePerLiter) {
       return res.status(400).json({
         success: false,
-        error: 'الشركة غير مدعومة'
+        error: `الشركة غير مدعومة حاليًا. المدعومة: إنرجكس، نهل، بيتروجين، ارامكو`
       });
     }
 
-    // ✅ حساب التكاليف
     const subtotal = quantityNum * pricePerLiter;
     const deliveryFee = 25.0;
     const vat = subtotal * 0.15;
     const totalAmount = subtotal + deliveryFee + vat;
 
-    // ✅ إنشاء رقم طلب فريد
-    const orderNumber = `FT${Date.now()}${Math.random().toString(36).substr(2, 5)}`.toUpperCase();
+    const orderNumber = `FT${Date.now()}${Math.floor(Math.random() * 99999).toString().padStart(5, '0')}`.toUpperCase();
 
-    // ✅ إنشاء طلب حقيقي في MongoDB
     const fuelTransfer = new FuelTransfer({
       orderNumber,
       customer: req.user.id,
-      company,
+      company: normalizedCompany,
+      fuelType,
       quantity: quantityNum,
+      unit: 'لتر',
       pricing: {
         pricePerLiter,
-        subtotal: parseFloat(subtotal.toFixed(2)),
+        subtotal: Number(subtotal.toFixed(2)),
         deliveryFee,
-        vat: parseFloat(vat.toFixed(2)),
-        totalAmount: parseFloat(totalAmount.toFixed(2)),
-        finalPrice: parseFloat(totalAmount.toFixed(2))
+        vat: Number(vat.toFixed(2)),
+        totalAmount: Number(totalAmount.toFixed(2)),
+        finalPrice: Number(totalAmount.toFixed(2))
       },
-      payment: {
-        method: paymentMethod,
-        status: 'pending'
-      },
-      deliveryLocation: {
-        address: deliveryLocation,
-        coordinates: coordinates || {}
-      },
-      status: 'pending'
+      payment: { method: paymentMethod, status: 'pending' },
+      deliveryLocation: { address: deliveryLocation, coordinates: coordinates || {} },
+      status: 'pending',
+      source: 'mobile'
     });
 
-    // ✅ حفظ الطلب في قاعدة البيانات
     const savedOrder = await fuelTransfer.save();
-    
-    console.log('✅ تم حفظ الطلب في قاعدة البيانات:', savedOrder._id);
+    console.log('تم حفظ الطلب بنجاح:', savedOrder._id, '| رقم الطلب:', savedOrder.orderNumber);
 
     res.status(201).json({
       success: true,
       message: 'تم إنشاء طلب نقل الوقود بنجاح',
-      data: {
-        order: savedOrder,
-        orderNumber: savedOrder.orderNumber
-      }
+      data: { order: savedOrder, orderNumber: savedOrder.orderNumber }
     });
 
   } catch (error) {
-    console.error('❌ Create Fuel Transfer Error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'حدث خطأ في إنشاء الطلب: ' + error.message
-    });
+    console.error('Create Fuel Transfer Error:', error);
+    res.status(500).json({ success: false, error: 'حدث خطأ في إنشاء الطلب: ' + error.message });
   }
 };
 
-// 📤 رفع فاتورة أرامكو - نسخة حقيقية
-fuelTransferController.uploadAramcoInvoice = async (req, res) => {
+// رفع فاتورة أرامكو (نسخة محسنة وآمنة)
+// في controllers/fuelTransferController.js
+fuelTransferController.uploadInvoiceUrl = async (req, res) => {
   try {
     const { orderId } = req.params;
+    const { invoiceUrl } = req.body;
 
-    console.log('📤 رفع فاتورة للطلب:', orderId);
+    console.log('🔗 تحديث رابط الفاتورة:', { orderId, invoiceUrl });
 
-    if (!req.file) {
+    if (!invoiceUrl) {
       return res.status(400).json({
         success: false,
-        error: 'يجب رفع ملف الفاتورة'
+        error: 'رابط الفاتورة مطلوب'
       });
     }
 
-    // ✅ رفع الملف إلى Firebase Storage (حقيقي)
-    const fileUrl = await uploadFileToFirebase(
-      req.file,
-      `invoices/${orderId}/${req.file.originalname}`
-    );
+    // البحث عن الطلب
+    let order;
+    if (mongoose.Types.ObjectId.isValid(orderId)) {
+      order = await FuelTransfer.findById(orderId);
+    } else {
+      order = await FuelTransfer.findOne({ orderNumber: orderId });
+    }
 
-    // ✅ تحديث الطلب في MongoDB
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        error: 'الطلب غير موجود'
+      });
+    }
+
+    // تحديث الطلب برابط الفاتورة
     const updatedOrder = await FuelTransfer.findByIdAndUpdate(
-      orderId,
+      order._id,
       {
         $set: {
-          'documents.aramcoInvoice': {
-            filename: req.file.filename,
-            originalName: req.file.originalname,
-            url: fileUrl,
-            uploadedAt: new Date()
-          },
+          'invoice_url': invoiceUrl, // ⭐ اسم الحقل الجديد
+          'invoice_uploaded_at': new Date(),
           status: 'under_review',
           updatedAt: new Date()
         }
@@ -147,29 +163,23 @@ fuelTransferController.uploadAramcoInvoice = async (req, res) => {
       { new: true }
     );
 
-    if (!updatedOrder) {
-      return res.status(404).json({
-        success: false,
-        error: 'الطلب غير موجود'
-      });
-    }
-
-    console.log('✅ تم رفع الفاتورة بنجاح:', orderId);
+    console.log('✅ تم تحديث رابط الفاتورة بنجاح:', orderId);
 
     res.json({
       success: true,
-      message: 'تم رفع الفاتورة بنجاح',
+      message: 'تم تحديث رابط الفاتورة بنجاح',
       data: {
-        document: updatedOrder.documents.aramcoInvoice,
-        order: updatedOrder
+        invoiceUrl,
+        orderNumber: updatedOrder.orderNumber,
+        status: updatedOrder.status
       }
     });
 
   } catch (error) {
-    console.error('❌ Upload Invoice Error:', error);
+    console.error('❌ Upload Invoice URL Error:', error);
     res.status(500).json({
       success: false,
-      error: 'حدث خطأ في رفع الملف: ' + error.message
+      error: 'حدث خطأ في تحديث رابط الفاتورة: ' + error.message
     });
   }
 };

@@ -1,44 +1,148 @@
 // controllers/notificationController.js
 const Notification = require("../models/Notification");
-const User = require('../models/User');
-const notificationService = require('../services/notificationService'); // تم التصحيح
+const User = require("../models/User");
+const Order = require("../models/Order");
+const notificationService = require("../services/notificationService");
 
+// ===============================================================
 // 🔹 إنشاء إشعار جديد
+// ===============================================================
 async function createNotification(req, res) {
   try {
     const notification = new Notification(req.body);
     await notification.save();
-    
-    // إذا كان الإشعار لمستخدم معين، أرسله عبر FCM
+
+    // إرسال عبر FCM إن كان لمستخدم معيّن
     if (notification.user && !notification.isScheduled) {
       const user = await User.findById(notification.user);
-      if (user && user.fcmToken) {
+
+      if (user && user.fcmTokens && user.fcmTokens.length > 0) {
         await notificationService.sendToUser(notification.user, {
           title: notification.title,
           body: notification.body,
           type: notification.type,
           data: notification.data,
           routing: notification.routing,
-          priority: notification.priority
+          priority: notification.priority,
         });
       }
     }
 
     res.status(201).json({
       success: true,
-      message: 'تم إنشاء الإشعار بنجاح',
-      data: notification
+      message: "تم إنشاء الإشعار بنجاح",
+      data: notification,
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'فشل في إنشاء الإشعار',
-      error: error.message
+      message: "فشل في إنشاء الإشعار",
+      error: error.message,
     });
   }
 }
 
+// ===============================================================
+// 🔹 تسجيل FCM Token
+// ===============================================================
+async function registerFcmToken(req, res) {
+  try {
+    const userId = req.user.id;
+    const { token } = req.body;
+
+    if (!token) {
+      return res
+        .status(400)
+        .json({ success: false, error: "FCM token is required" });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, error: "User not found" });
+    }
+
+    if (!user.fcmTokens) user.fcmTokens = [];
+
+    // منع التكرار
+    if (!user.fcmTokens.includes(token)) {
+      user.fcmTokens.push(token);
+      await user.save();
+    }
+
+    res.json({
+      success: true,
+      message: "FCM token registered successfully",
+      tokens: user.fcmTokens,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+}
+
+// ===============================================================
+// 🔹 تعيين سائق لطلب
+// ===============================================================
+async function assignDriver(req, res) {
+  try {
+    const { orderId, driverId } = req.body;
+
+    if (!orderId || !driverId) {
+      return res.status(400).json({
+        success: false,
+        error: "يجب إرسال معرف الطلب ومعرف السائق",
+      });
+    }
+
+    const driver = await User.findById(driverId);
+    if (!driver || driver.userType !== "driver") {
+      return res
+        .status(404)
+        .json({ success: false, error: "السائق غير موجود أو غير صالح" });
+    }
+
+    const order = await Order.findByIdAndUpdate(
+      orderId,
+      { assignedDriver: driverId, status: "assigned" },
+      { new: true }
+    );
+
+    if (!order) {
+      return res
+        .status(404)
+        .json({ success: false, error: "الطلب غير موجود" });
+    }
+
+    // إرسال إشعار للسائق
+    await notificationService.sendToUser(driverId, {
+      title: "تم تعيينك لطلب جديد",
+      body: `تم تعيينك للطلب رقم ${order._id}`,
+      type: "order",
+      data: { orderId: order._id },
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "تم تعيين السائق بنجاح",
+      data: order,
+    });
+  } catch (error) {
+    console.error("❌ assignDriver Error:", error);
+    res.status(500).json({
+      success: false,
+      error: "حدث خطأ أثناء تعيين السائق",
+      details: error.message,
+    });
+  }
+}
+
+// ===============================================================
 // 🔹 إرسال إشعار لمستخدم معين
+// ===============================================================
 async function sendToUser(req, res) {
   try {
     const { userId, title, body, type, data, routing, priority } = req.body;
@@ -46,80 +150,87 @@ async function sendToUser(req, res) {
     const notification = await notificationService.sendToUser(userId, {
       title,
       body,
-      type: type || 'system',
+      type: type || "system",
       data: data || {},
       routing: routing || {},
-      priority: priority || 'normal'
+      priority: priority || "normal",
     });
 
     res.status(201).json({
       success: true,
-      message: 'تم إرسال الإشعار للمستخدم بنجاح',
-      data: notification
+      message: "تم إرسال الإشعار للمستخدم بنجاح",
+      data: notification,
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'فشل في إرسال الإشعار',
-      error: error.message
+      message: "فشل في إرسال الإشعار",
+      error: error.message,
     });
   }
 }
 
-// 🔹 إرسال إشعار جماعي لمجموعة
+// ===============================================================
+// 🔹 إرسال إشعار جماعي
+// ===============================================================
 async function sendToGroup(req, res) {
   try {
-    const { targetGroup, title, body, type, data, routing, priority } = req.body;
+    const { targetGroup, title, body, type, data, routing, priority } =
+      req.body;
 
     const result = await notificationService.sendToGroup(targetGroup, {
       title,
       body,
-      type: type || 'system',
+      type: type || "system",
       data: data || {},
       routing: routing || {},
-      priority: priority || 'normal'
+      priority: priority || "normal",
     });
 
     res.status(201).json({
       success: true,
       message: `تم إرسال الإشعار إلى ${result.sentCount} مستخدم من أصل ${result.totalUsers}`,
-      data: result
+      data: result,
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'فشل في إرسال الإشعار الجماعي',
-      error: error.message
+      message: "فشل في إرسال الإشعار الجماعي",
+      error: error.message,
     });
   }
 }
 
+// ===============================================================
 // 🔹 إرسال إشعار طلب
+// ===============================================================
 async function sendOrderNotification(req, res) {
   try {
     const { orderId, type, additionalData } = req.body;
 
     const results = await notificationService.sendOrderNotification(
-      orderId, 
-      type, 
+      orderId,
+      type,
       additionalData || {}
     );
 
     res.status(200).json({
       success: true,
-      message: 'تم إرسال إشعار الطلب بنجاح',
-      data: results
+      message: "تم إرسال إشعار الطلب بنجاح",
+      data: results,
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'فشل في إرسال إشعار الطلب',
-      error: error.message
+      message: "فشل في إرسال إشعار الطلب",
+      error: error.message,
     });
   }
 }
 
+// ===============================================================
 // 🔹 إرسال إشعار مصادقة
+// ===============================================================
 async function sendAuthNotification(req, res) {
   try {
     const { userId, type, additionalData } = req.body;
@@ -132,19 +243,21 @@ async function sendAuthNotification(req, res) {
 
     res.status(200).json({
       success: true,
-      message: 'تم إرسال إشعار المصادقة بنجاح',
-      data: notification
+      message: "تم إرسال إشعار المصادقة بنجاح",
+      data: notification,
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'فشل في إرسال إشعار المصادقة',
-      error: error.message
+      message: "فشل في إرسال إشعار المصادقة",
+      error: error.message,
     });
   }
 }
 
+// ===============================================================
 // 🔹 إرسال إشعار دفع
+// ===============================================================
 async function sendPaymentNotification(req, res) {
   try {
     const { userId, type, additionalData } = req.body;
@@ -157,19 +270,21 @@ async function sendPaymentNotification(req, res) {
 
     res.status(200).json({
       success: true,
-      message: 'تم إرسال إشعار الدفع بنجاح',
-      data: notification
+      message: "تم إرسال إشعار الدفع بنجاح",
+      data: notification,
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'فشل في إرسال إشعار الدفع',
-      error: error.message
+      message: "فشل في إرسال إشعار الدفع",
+      error: error.message,
     });
   }
 }
 
-// 🔹 جلب إشعارات مستخدم معين
+// ===============================================================
+// 🔹 جلب إشعارات المستخدم
+// ===============================================================
 async function getUserNotifications(req, res) {
   try {
     const userId = req.user.id;
@@ -179,27 +294,31 @@ async function getUserNotifications(req, res) {
       $or: [
         { user: userId },
         { broadcast: true },
-        { targetGroup: { $in: ['all_customers', 'all_drivers', 'all_supervisors', 'all_admins', 'all_monitoring'] } }
-      ]
+        {
+          targetGroup: {
+            $in: [
+              "all_customers",
+              "all_drivers",
+              "all_supervisors",
+              "all_admins",
+              "all_monitoring",
+            ],
+          },
+        },
+      ],
     };
 
     if (type) filter.type = type;
+
     if (read !== undefined) {
-      if (read === 'true') {
-        filter.readBy = userId;
-      } else {
-        filter.readBy = { $ne: userId };
-      }
+      filter.readBy =
+        read === "true" ? userId : { $ne: userId };
     }
 
     const notifications = await Notification.find(filter)
       .sort({ createdAt: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit)
-      .populate('user', 'name phone')
-      .populate('data.orderId', 'orderNumber status')
-      .populate('data.driverId', 'name phone')
-      .populate('data.customerId', 'name phone');
+      .limit(limit)
+      .skip((page - 1) * limit);
 
     const total = await Notification.countDocuments(filter);
 
@@ -210,33 +329,34 @@ async function getUserNotifications(req, res) {
         page: parseInt(page),
         limit: parseInt(limit),
         total,
-        pages: Math.ceil(total / limit)
-      }
+        pages: Math.ceil(total / limit),
+      },
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'فشل في جلب الإشعارات',
-      error: error.message
+      message: "فشل في جلب الإشعارات",
+      error: error.message,
     });
   }
 }
 
-// 🔹 تحديد الإشعار كمقروء
+// ===============================================================
+// 🔹 تحديد إشعار كمقروء
+// ===============================================================
 async function markAsRead(req, res) {
   try {
     const { notificationId } = req.params;
     const userId = req.user.id;
 
     const notification = await Notification.findById(notificationId);
+
     if (!notification) {
-      return res.status(404).json({
-        success: false,
-        message: 'الإشعار غير موجود'
-      });
+      return res
+        .status(404)
+        .json({ success: false, message: "الإشعار غير موجود" });
     }
 
-    // إضافة المستخدم إلى قائمة المقروءات إذا لم يكن موجوداً
     if (!notification.readBy.includes(userId)) {
       notification.readBy.push(userId);
       await notification.save();
@@ -244,82 +364,63 @@ async function markAsRead(req, res) {
 
     res.json({
       success: true,
-      message: 'تم تحديد الإشعار كمقروء',
-      data: notification
+      message: "تم تحديد الإشعار كمقروء",
+      data: notification,
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'فشل في تحديث حالة الإشعار',
-      error: error.message
+      message: "فشل في تحديث حالة الإشعار",
+      error: error.message,
     });
   }
 }
 
+// ===============================================================
 // 🔹 تحديد جميع الإشعارات كمقروءة
+// ===============================================================
 async function markAllAsRead(req, res) {
   try {
     const userId = req.user.id;
 
-    // العثور على جميع الإشعارات غير المقروءة للمستخدم
-    const unreadNotifications = await Notification.find({
+    const unread = await Notification.find({
       $or: [
         { user: userId },
         { broadcast: true },
-        { targetGroup: { $in: ['all_customers', 'all_drivers', 'all_supervisors', 'all_admins', 'all_monitoring'] } }
+        {
+          targetGroup: {
+            $in: [
+              "all_customers",
+              "all_drivers",
+              "all_supervisors",
+              "all_admins",
+              "all_monitoring",
+            ],
+          },
+        },
       ],
-      readBy: { $ne: userId }
+      readBy: { $ne: userId },
     });
 
-    // تحديث جميع الإشعارات
-    for (const notification of unreadNotifications) {
-      if (!notification.readBy.includes(userId)) {
-        notification.readBy.push(userId);
-        await notification.save();
-      }
+    for (const n of unread) {
+      n.readBy.push(userId);
+      await n.save();
     }
 
     res.json({
       success: true,
-      message: `تم تحديد ${unreadNotifications.length} إشعار كمقروء`,
-      count: unreadNotifications.length
+      message: `تم تحديد ${unread.length} إشعار كمقروء`,
+      count: unread.length,
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'فشل في تحديث الإشعارات',
-      error: error.message
+      message: "فشل في تحديث الإشعارات",
+      error: error.message,
     });
   }
 }
 
-// 🔹 حذف إشعار
-async function deleteNotification(req, res) {
-  try {
-    const { notificationId } = req.params;
-
-    const notification = await Notification.findByIdAndDelete(notificationId);
-    if (!notification) {
-      return res.status(404).json({
-        success: false,
-        message: 'الإشعار غير موجود'
-      });
-    }
-
-    res.json({
-      success: true,
-      message: 'تم حذف الإشعار بنجاح'
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: 'فشل في حذف الإشعار',
-      error: error.message
-    });
-  }
-}
-
-// 🔹 إحصائيات الإشعارات
 async function getNotificationStats(req, res) {
   try {
     const userId = req.user.id;
@@ -328,7 +429,17 @@ async function getNotificationStats(req, res) {
       $or: [
         { user: userId },
         { broadcast: true },
-        { targetGroup: { $in: ['all_customers', 'all_drivers', 'all_supervisors', 'all_admins', 'all_monitoring'] } }
+        {
+          targetGroup: {
+            $in: [
+              "all_customers",
+              "all_drivers",
+              "all_supervisors",
+              "all_admins",
+              "all_monitoring"
+            ]
+          }
+        }
       ]
     };
 
@@ -340,7 +451,7 @@ async function getNotificationStats(req, res) {
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    
+
     const todayCount = await Notification.countDocuments({
       ...filter,
       createdAt: { $gte: today }
@@ -355,51 +466,89 @@ async function getNotificationStats(req, res) {
         read: totalNotifications - unreadCount
       }
     });
+
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'فشل في جلب إحصائيات الإشعارات',
+      message: "فشل في جلب إحصائيات الإشعارات",
       error: error.message
     });
   }
 }
 
-// 🔹 معالجة الإشعارات المجدولة
+
 async function processScheduledNotifications(req, res) {
   try {
-    // هذه الدالة تحتاج إلى تنفيذ إذا كان لديك إشعارات مجدولة
+    // TODO: إضافة كود لاحقاً لمعالجة إشعارات مجدولة
     res.json({
       success: true,
-      message: 'لا توجد إشعارات مجدولة للمعالجة حالياً'
+      message: "لا توجد إشعارات مجدولة للمعالجة حالياً"
     });
+
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'فشل في معالجة الإشعارات المجدولة',
+      message: "فشل في معالجة الإشعارات المجدولة",
       error: error.message
     });
   }
 }
 
-// 🔹 الحصول على حالة نظام الإشعارات
+
+// ===============================================================
+// 🔹 حذف إشعار
+// ===============================================================
+async function deleteNotification(req, res) {
+  try {
+    const { notificationId } = req.params;
+
+    const deleted = await Notification.findByIdAndDelete(notificationId);
+
+    if (!deleted) {
+      return res
+        .status(404)
+        .json({ success: false, message: "الإشعار غير موجود" });
+    }
+
+    res.json({
+      success: true,
+      message: "تم حذف الإشعار بنجاح",
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "فشل في حذف الإشعار",
+      error: error.message,
+    });
+  }
+}
+
+// ===============================================================
+// 🔹 حالة النظام
+// ===============================================================
 async function getSystemStatus(req, res) {
   try {
     const status = await notificationService.getSystemStatus();
+
     res.json({
       success: true,
-      data: status
+      data: status,
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'فشل في جلب حالة النظام',
-      error: error.message
+      message: "فشل في جلب حالة النظام",
+      error: error.message,
     });
   }
 }
 
+// ===============================================================
+// 🔹 تصدير الدوال
+// ===============================================================
 module.exports = {
   createNotification,
+  registerFcmToken,
   sendToUser,
   sendToGroup,
   sendOrderNotification,
@@ -411,5 +560,6 @@ module.exports = {
   deleteNotification,
   getNotificationStats,
   processScheduledNotifications,
-  getSystemStatus
+  getSystemStatus,
+  assignDriver,
 };

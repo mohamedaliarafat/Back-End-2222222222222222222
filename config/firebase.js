@@ -8,216 +8,142 @@ let firebaseInitialized = false;
 let bucket = null;
 let messaging = null;
 
-/**
- * حاول تحميل service account من (1) متغيّر بيئي base64، (2) متغيرات منفصلة، (3) ملف محلي كخيار احتياطي.
- * أعد كائن JSON صالح للاستخدام مع admin.credential.cert(...)
- */
+// تحميل ملف Service Account
 function loadServiceAccount() {
-  // 1) من متغير base64 كامل (مفضّل لمشاريع CI/CD / GitHub Secrets)
-  const b64 = process.env.GOOGLE_SERVICE_ACCOUNT_B64;
-  if (b64) {
-    try {
-      const json = Buffer.from(b64, 'base64').toString('utf8');
-      return JSON.parse(json);
-    } catch (err) {
-      console.warn('⚠️ Failed to parse GOOGLE_SERVICE_ACCOUNT_B64:', err.message);
-    }
-  }
-
-  // 2) من متغيرات منفصلة (مع استبدال \n في المفتاح الخاص)
-  const minimal = process.env.GOOGLE_TYPE && process.env.GOOGLE_PROJECT_ID && process.env.GOOGLE_PRIVATE_KEY;
-  if (minimal) {
-    return {
-      type: process.env.GOOGLE_TYPE,
-      project_id: process.env.GOOGLE_PROJECT_ID,
-      private_key_id: process.env.GOOGLE_PRIVATE_KEY_ID,
-      private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-      client_email: process.env.GOOGLE_CLIENT_EMAIL,
-      client_id: process.env.GOOGLE_CLIENT_ID,
-      auth_uri: process.env.GOOGLE_AUTH_URI || 'https://accounts.google.com/o/oauth2/auth',
-      token_uri: process.env.GOOGLE_TOKEN_URI || 'https://oauth2.googleapis.com/token',
-      auth_provider_x509_cert_url: process.env.GOOGLE_AUTH_PROVIDER_CERT_URL,
-      client_x509_cert_url: process.env.GOOGLE_CLIENT_X509_CERT_URL
-    };
-  }
-
-  // 3) كخيار احتياطي: ملف محلي (فقط إذا موجود)
   const localPath = path.resolve(__dirname, './firebaseServiceAccount.json');
-  if (fs.existsSync(localPath)) {
-    try {
-      return require(localPath);
-    } catch (err) {
-      console.warn('⚠️ Failed to require local firebaseServiceAccount.json:', err.message);
-    }
+
+  if (!fs.existsSync(localPath)) {
+    console.error('❌ firebaseServiceAccount.json not found');
+    return null;
   }
 
-  // لا شيء وجد
-  return null;
+  try {
+    return require(localPath);
+  } catch (err) {
+    console.error('❌ Failed loading service account:', err.message);
+    return null;
+  }
 }
 
 try {
-  // إذا Firebase مهيأ مسبقًا - إعادة استخدامه
-  if (admin.apps && admin.apps.length > 0) {
-    firebaseInitialized = true;
-    console.log('✅ Firebase app already exists, reusing existing instance');
-  } else {
-    const serviceAccount = loadServiceAccount();
-    if (!serviceAccount) {
-      throw new Error('No Firebase service account found (env or local file).');
+  const serviceAccount = loadServiceAccount();
+
+  if (!serviceAccount) {
+    throw new Error("Missing service account file");
+  }
+
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+    storageBucket: "albuhairaalarabia2026.appspot.com"
+  });
+
+  firebaseInitialized = true;
+
+  console.log("✅ Firebase initialized!");
+  console.log(`📧 Service Account: ${serviceAccount.client_email}`);
+  console.log(`🏢 Project: ${serviceAccount.project_id}`);
+
+} catch (error) {
+  console.error("❌ Firebase init failed:", error.message);
+}
+
+if (firebaseInitialized) {
+  try { bucket = admin.storage().bucket(); } catch { bucket = null; }
+  try { messaging = admin.messaging(); } catch { messaging = null; }
+}
+
+// ===============================
+//   🔥 NEW FCM FUNCTION (SDK v11+)
+// ===============================
+async function sendFCMNotification(tokens, notification, data = {}) {
+  if (!firebaseInitialized || !messaging) {
+    console.log("📱 [LOCAL MODE] Simulated FCM:", { tokens, notification, data });
+    return { success: true };
+  }
+
+  try {
+    // Ensure tokens is array
+    if (typeof tokens === "string") tokens = [tokens];
+    if (!Array.isArray(tokens) || tokens.length === 0) {
+      console.log("⚠ No FCM tokens provided");
+      return { success: false };
     }
 
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount),
-      storageBucket: process.env.FIREBASE_STORAGE_BUCKET || 'albuhairaalarabia2026.appspot.com',
-    });
-
-    firebaseInitialized = true;
-    console.log('✅ Firebase initialized successfully for all services');
-    if (serviceAccount.client_email) console.log(`📧 Service Account: ${serviceAccount.client_email}`);
-    if (serviceAccount.project_id) console.log(`🏢 Project: ${serviceAccount.project_id}`);
-  }
-} catch (error) {
-  // لا تنهار العملية - فقط تُعلم أن Firebase غير متاح
-  console.error('❌ Firebase initialization failed:', error.message);
-  console.log('📱 Firebase services will not be available (running in local mode)');
-}
-
-// فقط إذا مهيأ فعلاً، اعطِ المراجع
-if (firebaseInitialized) {
-  try {
-    bucket = admin.storage().bucket();
-  } catch (err) {
-    console.warn('⚠️ Could not initialize storage bucket:', err.message);
-    bucket = null;
-  }
-
-  try {
-    messaging = admin.messaging();
-  } catch (err) {
-    console.warn('⚠️ Could not initialize messaging:', err.message);
-    messaging = null;
-  }
-}
-
-/** Helpers */
-function isFirebaseInitialized() {
-  return firebaseInitialized;
-}
-
-function getFirebaseInfo() {
-  if (!firebaseInitialized) {
-    return {
-      initialized: false,
-      projectId: null,
-      message: 'Firebase not initialized'
-    };
-  }
-
-  // تأكد إن هذه القيم مناسبة أو اقرأها من service account لو رغبت
-  return {
-    initialized: true,
-    projectId: process.env.GOOGLE_PROJECT_ID || 'albuhairaalarabia2026',
-    clientEmail: process.env.GOOGLE_CLIENT_EMAIL || null,
-    message: 'Firebase services are active and ready'
-  };
-}
-
-/**
- * إرسال إشعار FCM
- * - tokens: string (single) OR array of tokens
- * - notification: { title, body, _id?, type?, routing?, data?, priority? }
- * - data: إضافي (object)
- */
-async function sendFCMNotification(tokens, notification, data = {}) {
-  // Local mode logging when Firebase غير مهيأ
-  if (!firebaseInitialized || !messaging) {
-    console.log('📱 [LOCAL MODE] FCM:', {
-      to: Array.isArray(tokens) ? `${tokens.length} devices` : tokens,
-      notification: { title: notification.title, body: notification.body },
-      data
-    });
-    // محاكاة استجابة
-    return {
-      success: true,
-      result: { successCount: Array.isArray(tokens) ? tokens.length : 1, failureCount: 0 }
-    };
-  }
-
-  try {
-    const payloadData = {
-      ...data,
-      notificationId: notification._id?.toString?.() || '',
-      type: notification.type || '',
-      screen: notification.routing?.screen || '',
-      action: notification.routing?.action || '',
-      ...notification.data
-    };
-
-    // إنشاء الجسم العام للإشعار
-    const common = {
+    // Prepare messages
+    const payloads = tokens.map(token => ({
+      token,
       notification: {
         title: notification.title,
         body: notification.body
       },
-      data: Object.fromEntries(Object.entries(payloadData).map(([k, v]) => [k, String(v)])), // كلها سترينغ
-      android: {
-        priority: notification.priority === 'urgent' ? 'high' : 'normal',
-        ttl: 3600 * 1000
+      data: {
+        ...convertToStringData(data),
+        notificationId: String(notification._id || ''),
+        type: String(notification.type || ''),
       },
+
+      android: { priority: "high" },
       apns: {
         payload: {
-          aps: {
-            sound: 'default',
-            badge: 1,
-            'content-available': 1
-          }
+          aps: { sound: "default", badge: 1 }
         }
       }
+    }));
+
+    // ✔ NEW — Compatible with all Firebase Admin SDK versions
+    const rawResult = await messaging.sendEach(payloads);
+
+    // Normalize results
+    const results =
+      Array.isArray(rawResult) ? rawResult :
+      rawResult.responses ? rawResult.responses :
+      rawResult.results ? rawResult.results :
+      [rawResult];
+
+    const successCount = results.filter(r => r.success).length;
+    const failureCount = results.length - successCount;
+
+    console.log(`📨 FCM sent => success: ${successCount}, failed: ${failureCount}`);
+
+     results.forEach((r, i) => {
+      if (!r.success) {
+        console.log(`❌ Token Failed [${i}]`, tokens[i], r.error || r);
+      }
+    });
+
+    return {
+      success: true,
+      result: { successCount, failureCount }
     };
 
-    // حالة توكن واحد
-    if (typeof tokens === 'string') {
-      const message = { ...common, token: tokens };
-      const result = await messaging.send(message);
-      console.log(`✅ FCM sent to single device: ${notification.title}`);
-      return { success: true, result };
-    }
-
-    // حالة مصفوفة توكنات - استخدم sendMulticast
-    if (Array.isArray(tokens) && tokens.length > 0) {
-      // sendMulticast expects { tokens, notification?, data?, ... } but admin SDK provides sendMulticast({ tokens, notification, data, android, apns })
-      const multicast = {
-        tokens,
-        notification: common.notification,
-        data: common.data,
-        android: common.android,
-        apns: common.apns
-      };
-
-      const result = await messaging.sendMulticast(multicast);
-      console.log(`✅ FCM multicast: success ${result.successCount}, failure ${result.failureCount}`);
-      return {
-        success: true,
-        result: {
-          successCount: result.successCount,
-          failureCount: result.failureCount,
-          responses: result.responses
-        }
-      };
-    }
-
-    return { success: false, error: 'No valid tokens provided' };
   } catch (error) {
-    console.error('❌ FCM Error:', error);
-    return { success: false, error: error.message || String(error) };
+    console.error("❌ FCM Error:", error);
+    return { success: false, error };
   }
 }
+
+
+function convertToStringData(obj) {
+  const result = {};
+
+  for (const key in obj) {
+    if (obj[key] === undefined || obj[key] === null) {
+      result[key] = "";
+    } else if (typeof obj[key] === "object") {
+      result[key] = JSON.stringify(obj[key]);
+    } else {
+      result[key] = String(obj[key]);
+    }
+  }
+
+  return result;
+}
+
 
 module.exports = {
   admin,
   bucket,
   messaging,
-  isFirebaseInitialized,
-  getFirebaseInfo,
-  sendFCMNotification
+  sendFCMNotification,
+  isFirebaseInitialized: () => firebaseInitialized
 };

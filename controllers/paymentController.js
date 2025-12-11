@@ -3,8 +3,12 @@ const Payment = require('../models/Payment');
 const Order = require('../models/Order');
 const Notification = require('../models/Notification');
 const User = require('../models/User'); // ⭐ مهم: أضف استيراد User
+const notificationService = require("../services/notificationService");
 
 const paymentController = {};
+
+
+
 
 // 📊 إحصائيات المدفوعات (للإدمن) - ⭐ مسار جديد
 paymentController.getPaymentStats = async (req, res) => {
@@ -191,6 +195,9 @@ paymentController.uploadPaymentProof = async (req, res) => {
       updatedAt: new Date()
     });
     console.log('✅ Order status updated');
+    // 🔔 إشعار للادمن بوجود إيصال جديد
+    await sendPaymentVerificationNotification(order, orderType);
+
 
     res.json({
       success: true,
@@ -276,7 +283,17 @@ paymentController.verifyPayment = async (req, res) => {
     }
 
     // إرسال إشعار للعميل
-    await sendPaymentStatusNotification(payment, status, adminNotes);
+    // إشعار للعميل
+await notificationService.sendPaymentNotification(payment.userId, 
+  status === "verified" ? "payment_verified" : "payment_failed",
+  {
+    paymentId: payment._id.toString(),
+    status,
+    notes: adminNotes || "",
+    amount: payment.totalAmount
+  }
+);
+
 
     res.json({
       success: true,
@@ -341,58 +358,62 @@ paymentController.getPayments = async (req, res) => {
   }
 };
 
-// 🎯 دوال مساعدة
 const sendPaymentVerificationNotification = async (order, orderType) => {
   try {
     const admins = await User.find({ userType: 'admin', isActive: true });
 
-    const notification = new Notification({
-      title: 'إيصال دفع يحتاج مراجعة',
-      body: `إيصال دفع جديد للطلب #${order.orderNumber} يحتاج مراجعة`,
-      targetGroup: 'all_admins',
-      type: 'payment_pending',
-      data: {
-        orderId: order._id,
-        orderType,
-        orderNumber: order.orderNumber
-      },
-      routing: {
-        screen: 'PaymentReview',
-        params: { orderId: order._id, orderType }
-      }
-    });
+   const notification = new Notification({
+  title: 'إيصال دفع جديد',
+  body: `تم رفع إيصال دفع للطلب #${order.orderNumber} ويحتاج مراجعة.`,
+  broadcast: true,                    // ✅ مهم
+  targetGroup: 'all_admins',          // ✅ الصحيح
+  type: 'payment_under_review',       // يجب إضافته للـ enum
+  data: {
+    orderId: order._id,
+    orderType,
+    orderNumber: order.orderNumber
+  },
+  routing: {
+    screen: 'AdminPaymentReview',
+    params: { orderId: order._id, orderType }
+  }
+});
+
 
     await notification.save();
+    console.log('📩 Notification sent to all admins');
+
   } catch (error) {
     console.error('❌ خطأ في إرسال إشعار مراجعة الدفع:', error);
   }
 };
 
-const sendPaymentStatusNotification = async (payment, status, notes) => {
-  try {
-    let title, body;
 
-    if (status === 'verified') {
-      title = 'تم التحقق من الدفع';
-      body = 'تم التحقق من إيصال الدفع الخاص بك وسيتم متابعة الطلب';
-    } else {
-      title = 'ملاحظات على إيصال الدفع';
-      body = `يوجد ملاحظات على إيصال الدفع: ${notes}`;
-    }
+paymentController.sendPaymentStatusNotification = async (payment, status, notes) => {
+  try {
+    const isApproved = status === 'verified';
 
     const notification = new Notification({
-      title,
-      body,
-      user: payment.userId,
-      type: status === 'verified' ? 'payment_verified' : 'payment_failed',
+      title: isApproved ? 'تم التحقق من الدفع' : 'تم رفض إيصال الدفع',
+      body: isApproved 
+        ? 'تم التحقق من الدفع وسيتم متابعة طلبك.' 
+        : `تم رفض الإيصال بسبب: ${notes || 'لم يتم تحديد سبب'}`,
+      user: payment.userId, // المستخدم صاحب الدفع
+      type: isApproved ? 'payment_verified' : 'payment_rejected',
       data: {
         paymentId: payment._id,
         status,
         notes
+      },
+      routing: {
+        screen: 'PaymentDetails',
+        params: { paymentId: payment._id }
       }
     });
 
     await notification.save();
+    console.log('📩 Notification sent to user:', payment.userId);
+
   } catch (error) {
     console.error('❌ خطأ في إرسال إشعار حالة الدفع:', error);
   }

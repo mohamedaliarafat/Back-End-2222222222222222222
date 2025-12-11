@@ -867,10 +867,9 @@
 // };
 
 
-
 // controllers/orderController.js
 const Order = require('../models/Order');
-const Notification = require('../models/Notification');
+const NotificationService = require('../services/notificationService');
 const User = require('../models/User');
 
 // ========= Fuel Helper =========
@@ -894,50 +893,9 @@ function getFuelTypeName(type) {
   }
 }
 
-// ========= Notification Helper =========
-// دالة مساعدة للتحقق من القيم قبل إنشاء الإشعار
-const validateNotificationData = (notificationData) => {
-  const validTypes = [
-    'system', 'auth', 'order_new', 'order_status', 'order_price',
-    'order_assigned', 'order_delivered', 'payment_pending',
-    'payment_verified', 'payment_failed', 'driver_assignment',
-    'driver_location', 'chat_message', 'incoming_call',
-    'profile_approved', 'profile_rejected', 'admin_alert',
-    'supervisor_alert', 'fuel_order_new', 'fuel_order_status', 
-    'fuel_delivery_started', 'fuel_delivery_completed'
-  ];
+// ========= Notification Integration =========
 
-  const validTargetGroups = [
-    'all_customers', 'all_drivers', 'all_supervisors', 
-    'all_admins', 'all_monitoring', 'specific_role'
-  ];
-
-  const validPriorities = ['low', 'normal', 'high', 'urgent'];
-
-  // التحقق من type
-  if (!validTypes.includes(notificationData.type)) {
-    notificationData.type = 'system'; // قيمة افتراضية
-  }
-
-  // التحقق من targetGroup (فقط إذا كان broadcast = true)
-  if (notificationData.broadcast && notificationData.targetGroup) {
-    if (!validTargetGroups.includes(notificationData.targetGroup)) {
-      notificationData.targetGroup = 'all_customers'; // قيمة افتراضية
-    }
-  } else {
-    // إذا لم يكن broadcast، لا نستخدم targetGroup
-    notificationData.targetGroup = undefined;
-  }
-
-  // التحقق من priority
-  if (!validPriorities.includes(notificationData.priority)) {
-    notificationData.priority = 'normal'; // قيمة افتراضية
-  }
-
-  return notificationData;
-};
-
-// ⛽ إنشاء طلب وقود
+// ⛽ إنشاء طلب وقود مع الإشعارات التلقائية
 exports.createOrder = async (req, res) => {
   try {
     const userId = req.user.userId;
@@ -1032,8 +990,23 @@ exports.createOrder = async (req, res) => {
       estimatedPrice: order.pricing.estimatedPrice
     });
 
-    // إرسال إشعار للمشرفين
-    await sendNotificationToSupervisors(order);
+    // 🔔 إرسال إشعارات تلقائية
+    
+    // 1. إشعار للعميل (تأكيد الطلب)
+    await NotificationService.sendOrderNotification(
+      order._id,
+      'order_confirmed',
+      {
+        fuelType: order.fuelDetails.fuelTypeName,
+        liters: order.fuelDetails.fuelLiters
+      }
+    );
+
+    // 2. إشعار للمشرفين (طلب جديد)
+    await NotificationService.sendOrderNotification(
+      order._id,
+      'order_new'
+    );
 
     res.status(201).json({
       success: true,
@@ -1161,7 +1134,7 @@ exports.getOrder = async (req, res) => {
   }
 };
 
-// ✅ تحديث حالة طلب الوقود (للمشرفين)
+// ✅ تحديث حالة طلب الوقود (للمشرفين) مع الإشعارات
 exports.updateOrderStatus = async (req, res) => {
   try {
     const { orderId } = req.params;
@@ -1205,8 +1178,34 @@ exports.updateOrderStatus = async (req, res) => {
       });
     }
 
-    // إرسال إشعار للعميل
-    await sendStatusNotification(order, status);
+    // 🔔 إرسال إشعار تلقائي حسب الحالة
+    let notificationType;
+    switch (status) {
+      case 'approved':
+        notificationType = 'order_confirmed';
+        break;
+      case 'processing':
+        notificationType = 'order_processing';
+        break;
+      case 'ready_for_delivery':
+        notificationType = 'order_ready_for_delivery';
+        break;
+      case 'cancelled':
+        notificationType = 'order_cancelled';
+        break;
+      default:
+        notificationType = 'order_status_updated';
+    }
+
+    await NotificationService.sendOrderNotification(
+      order._id,
+      notificationType,
+      {
+        status: status,
+        notes: notes || '',
+        ...(notificationType === 'order_cancelled' && { reason: notes })
+      }
+    );
 
     console.log('✅ تم تحديث حالة طلب الوقود:', {
       orderId: order._id,
@@ -1228,7 +1227,7 @@ exports.updateOrderStatus = async (req, res) => {
   }
 };
 
-// 💰 تحديد سعر طلب الوقود - الإصدار المحسّن
+// 💰 تحديد سعر طلب الوقود مع الإشعارات التلقائية
 exports.setOrderPrice = async (req, res) => {
   try {
     const { orderId } = req.params;
@@ -1288,8 +1287,24 @@ exports.setOrderPrice = async (req, res) => {
       status: updatedOrder.status
     });
 
-    // 🔥 إرسال إشعار للعميل بتحديث السعر والحالة
-    await sendPriceAndStatusNotification(updatedOrder, finalPrice);
+    // 🔔 إرسال إشعار تلقائي للعميل
+    await NotificationService.sendOrderNotification(
+      updatedOrder._id,
+      'order_price_set',
+      {
+        amount: finalPrice,
+        notes: adminNotes || ''
+      }
+    );
+
+    // 🔔 إرسال إشعار في انتظار الدفع
+    await NotificationService.sendOrderNotification(
+      updatedOrder._id,
+      'order_waiting_payment',
+      {
+        amount: finalPrice
+      }
+    );
 
     res.json({
       success: true,
@@ -1333,6 +1348,15 @@ exports.updateOrderPriceOnly = async (req, res) => {
       });
     }
 
+    // 🔔 إرسال إشعار تلقائي
+    await NotificationService.sendOrderNotification(
+      order._id,
+      'order_price_set',
+      {
+        amount: finalPrice
+      }
+    );
+
     res.json({
       success: true,
       message: 'تم تحديث السعر بنجاح',
@@ -1348,7 +1372,7 @@ exports.updateOrderPriceOnly = async (req, res) => {
   }
 };
 
-// 🎛️ موافقة نهائية على الطلب مع السعر
+// 🎛️ موافقة نهائية على الطلب مع السعر والإشعارات
 exports.finalApproveOrder = async (req, res) => {
   try {
     const { orderId } = req.params;
@@ -1395,8 +1419,29 @@ exports.finalApproveOrder = async (req, res) => {
       });
     }
 
-    // 🔥 إرسال إشعار للعميل
-    await sendPriceAndStatusNotification(updatedOrder, finalPrice);
+    // 🔔 إرسال إشعارات تلقائية متعددة
+    await Promise.all([
+      // إشعار الموافقة
+      NotificationService.sendOrderNotification(
+        updatedOrder._id,
+        'order_confirmed',
+        { adminNotes: adminNotes || '' }
+      ),
+      
+      // إشعار تحديد السعر
+      NotificationService.sendOrderNotification(
+        updatedOrder._id,
+        'order_price_set',
+        { amount: finalPrice }
+      ),
+      
+      // إشعار في انتظار الدفع
+      NotificationService.sendOrderNotification(
+        updatedOrder._id,
+        'order_waiting_payment',
+        { amount: finalPrice }
+      )
+    ]);
 
     console.log('✅ تمت الموافقة على الطلب مع السعر:', {
       orderId: updatedOrder._id,
@@ -1419,62 +1464,87 @@ exports.finalApproveOrder = async (req, res) => {
   }
 };
 
-// controllers/orderController.js
+// 🚗 تخصيص سائق لطلب الوقود مع الإشعارات
 exports.assignOrderDriver = async (req, res) => {
   try {
     const { orderId } = req.params;
-    const { driverId, assignedDriverName, assignedToDriverAt, status } = req.body;
+    const { driverId } = req.body;
+    const userId = req.user.userId;
 
-    const order = await Order.findById(orderId);
-    if (!order) return res.status(404).json({ success: false, error: "الطلب غير موجود" });
-
-    // تحديث البيانات
-    order.driverId = driverId;
-    if (status) order.status = status; // ← مهم: يسمح بتغيير الحالة مباشرة
-    if (assignedToDriverAt) order.assignedToDriverAt = new Date(assignedToDriverAt);
-
-    // تتبع
-    order.tracking.push({
-      status: status || "assigned_to_driver",
-      note: `تم تعيين الطلب للسائق: ${assignedDriverName || 'الإدارة'}`,
-      timestamp: new Date(),
-    });
-
-    await order.save();
-
-    // إرسال FCM للسائق
-    const driver = await User.findById(driverId).select('fcmToken name');
-    if (driver?.fcmToken) {
-      await sendFCMNotification(
-        driver.fcmToken,
-        "طلب وقود جديد مُعيَّن لك!",
-        `طلب #${order.orderNumber} - ${order.fuelDetails.fuelLiters} لتر ${order.fuelDetails.fuelTypeName}`,
-        {
-          type: "new_assigned_order",
-          orderId: order._id.toString(),
-          orderNumber: order.orderNumber,
-        }
-      );
+    // التحقق من الصلاحية (الإدمن والمشرفين)
+    if (!['admin', 'approval_supervisor'].includes(req.user.userType)) {
+      return res.status(403).json({
+        success: false,
+        error: 'غير مسموح بتخصيص السائقين'
+      });
     }
 
-    // رجّع الطلب كامل بعد الـ populate
-    const populatedOrder = await Order.findById(orderId)
-      .populate('customerId', 'name phone')
-      .populate('driverId', 'name phone');
+    // التحقق من وجود السائق
+    const driver = await User.findOne({ 
+      _id: driverId, 
+      userType: 'driver',
+      isActive: true 
+    });
+
+    if (!driver) {
+      return res.status(404).json({
+        success: false,
+        error: 'السائق غير موجود أو غير مفعل'
+      });
+    }
+
+    const updateData = {
+      driverId,
+      status: 'assigned_to_driver',
+      assignedToDriverAt: new Date()
+    };
+
+    const order = await Order.findOneAndUpdate(
+      { _id: orderId, serviceType: 'fuel' }, 
+      updateData, 
+      { new: true }
+    )
+    .populate('customerId', 'name phone')
+    .populate('driverId', 'name phone');
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        error: 'طلب الوقود غير موجود'
+      });
+    }
+
+    // 🔔 إرسال إشعارات تلقائية
+    await NotificationService.sendOrderNotification(
+      order._id,
+      'order_assigned_to_driver',
+      {
+        driverName: driver.name,
+        driverPhone: driver.phone
+      }
+    );
+
+    console.log('✅ تم تخصيص سائق لطلب الوقود:', {
+      orderId: order._id,
+      driverId: order.driverId._id
+    });
 
     res.json({
       success: true,
-      message: "تم تعيين السائق وإرسال الإشعار بنجاح",
-      order: populatedOrder.toObject()
+      message: 'تم تخصيص السائق للطلب بنجاح',
+      order
     });
 
   } catch (error) {
-      console.error("assignOrderDriver error:", error);
-      res.status(500).json({ success: false, error: error.message });
+    console.error('❌ خطأ في تخصيص سائق لطلب الوقود:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
   }
 };
 
-// 📍 تحديث تتبع طلب الوقود (للسائق)
+// 📍 تحديث تتبع طلب الوقود (للسائق) مع الإشعارات
 exports.updateOrderTracking = async (req, res) => {
   try {
     const { orderId } = req.params;
@@ -1522,8 +1592,33 @@ exports.updateOrderTracking = async (req, res) => {
 
     await order.save();
 
-    // إرسال إشعار للعميل
-    await sendTrackingNotification(order, status);
+    // 🔔 إرسال إشعار تلقائي حسب الحالة
+    let notificationType;
+    switch (status) {
+      case 'picked_up':
+        notificationType = 'order_picked_up';
+        break;
+      case 'in_transit':
+        notificationType = 'order_in_transit';
+        break;
+      case 'delivered':
+        notificationType = 'order_delivered';
+        break;
+      case 'completed':
+        notificationType = 'order_completed';
+        break;
+      default:
+        notificationType = 'order_status_updated';
+    }
+
+    await NotificationService.sendOrderNotification(
+      order._id,
+      notificationType,
+      {
+        note: note || '',
+        location: location || {}
+      }
+    );
 
     console.log('✅ تم تحديث تتبع طلب الوقود:', {
       orderId: order._id,
@@ -1545,11 +1640,12 @@ exports.updateOrderTracking = async (req, res) => {
   }
 };
 
-// ❌ إلغاء طلب الوقود
+// ❌ إلغاء طلب الوقود مع الإشعارات
 exports.cancelOrder = async (req, res) => {
   try {
     const { orderId } = req.params;
     const userId = req.user.userId;
+    const { reason } = req.body;
 
     const order = await Order.findOne({ 
       _id: orderId, 
@@ -1572,7 +1668,17 @@ exports.cancelOrder = async (req, res) => {
     }
 
     order.status = 'cancelled';
+    order.cancellationReason = reason || '';
     await order.save();
+
+    // 🔔 إرسال إشعار إلغاء الطلب
+    await NotificationService.sendOrderNotification(
+      order._id,
+      'order_cancelled',
+      {
+        reason: reason || 'تم الإلغاء من قبل العميل'
+      }
+    );
 
     res.json({
       success: true,
@@ -1589,85 +1695,82 @@ exports.cancelOrder = async (req, res) => {
   }
 };
 
-// 🎯 دوال مساعدة للإشعارات (محدثة)
-const sendNotificationToSupervisors = async (order) => {
+// 💳 التحقق من الدفع مع الإشعارات
+exports.verifyPayment = async (req, res) => {
   try {
-    const supervisors = await User.find({ 
-      userType: 'approval_supervisor',
-      isActive: true 
+    const { orderId } = req.params;
+    const { amount, proof } = req.body;
+    const userId = req.user.userId;
+
+    const order = await Order.findOne({ 
+      _id: orderId, 
+      serviceType: 'fuel' 
     });
 
-    // إرسال إشعار لكل مشرف
-    for (const supervisor of supervisors) {
-      const notificationData = validateNotificationData({
-        title: 'طلب وقود جديد',
-        body: `طلب وقود جديد #${order.orderNumber} يحتاج للمراجعة`,
-        user: supervisor._id,
-        broadcast: false,
-        type: 'fuel_order_new',
-        data: {
-          orderId: order._id,
-          orderType: 'fuel'
-        },
-        routing: {
-          screen: 'OrderDetails',
-          params: { 
-            orderId: order._id.toString(),
-            orderType: 'fuel'
-          },
-          action: 'review_order'
-        },
-        priority: 'high',
-        sentViaFcm: true
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        error: 'طلب الوقود غير موجود'
       });
-
-      const notification = new Notification(notificationData);
-      await notification.save();
     }
 
-    console.log('📨 تم إرسال إشعار للمشرفين عن طلب وقود جديد');
-  } catch (error) {
-    console.error('❌ خطأ في إرسال الإشعار للمشرفين:', error);
-  }
-};
+    // تحديث حالة الدفع
+    order.payment.status = 'verified';
+    order.payment.proof = {
+      image: proof?.image || '',
+      bankName: proof?.bankName || '',
+      accountNumber: proof?.accountNumber || '',
+      amount: amount || order.pricing.finalPrice,
+      verifiedAt: new Date(),
+      verifiedBy: userId
+    };
 
-// 🔔 إرسال إشعار بتحديث السعر والحالة - الإصدار المصحح
-const sendPriceAndStatusNotification = async (order, price) => {
-  try {
-    const notificationData = validateNotificationData({
-      title: 'تم تحديد سعر الطلب',
-      body: `تم تحديد سعر طلبك #${order.orderNumber} - ${price} ريال - الطلب في انتظار الدفع`,
-      user: order.customerId,
-      broadcast: false,
-      type: 'order_price',
-      data: {
-        orderId: order._id,
-        orderType: 'fuel',
-        price: price,
-        status: 'waiting_payment'
-      },
-      routing: {
-        screen: 'OrderDetails',
-        params: { 
-          orderId: order._id.toString(),
-          orderType: 'fuel'
-        },
-        action: 'view_order'
-      },
-      priority: 'high',
-      sentViaFcm: true
+    // تغيير حالة الطلب
+    order.status = 'processing';
+    await order.save();
+
+    // 🔔 إرسال إشعارات تلقائية
+    await Promise.all([
+      // إشعار التحقق من الدفع
+      NotificationService.sendOrderNotification(
+        order._id,
+        'order_payment_verified',
+        {
+          amount: amount || order.pricing.finalPrice
+        }
+      ),
+      
+      // إشعار جاري المعالجة
+      NotificationService.sendOrderNotification(
+        order._id,
+        'order_processing',
+        {}
+      ),
+      
+      // إشعار للسائقين أن الطلب جاهز للتسليم
+      NotificationService.sendOrderNotification(
+        order._id,
+        'order_ready_for_delivery',
+        {}
+      )
+    ]);
+
+    res.json({
+      success: true,
+      message: 'تم التحقق من الدفع بنجاح',
+      order
     });
 
-    const notification = new Notification(notificationData);
-    await notification.save();
-    
-    console.log('📨 تم إرسال إشعار السعر والحالة للعميل');
-    
   } catch (error) {
-    console.error('❌ خطأ في إرسال إشعار السعر والحالة:', error);
+    console.error('❌ خطأ في التحقق من الدفع:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
   }
 };
 
+// 🎯 دوال مساعدة
 const generateDeliveryCode = () => {
   return Math.random().toString(36).substring(2, 8).toUpperCase();
 };
@@ -1691,165 +1794,121 @@ const getStatusText = (status) => {
   return statusMap[status] || status;
 };
 
-// دوال إرسال الإشعارات الأساسية المصححة
-const sendStatusNotification = async (order, status) => {
+// دالة لإرسال إشعار تلقائي لتحديث حالة الطلب
+const sendOrderStatusNotification = async (order, oldStatus, newStatus) => {
   try {
-    const notificationData = validateNotificationData({
-      title: 'تحديث حالة الطلب',
-      body: `تم تحديث حالة طلبك #${order.orderNumber} إلى ${getStatusText(status)}`,
-      user: order.customerId,
-      broadcast: false,
-      type: 'order_status',
-      data: {
-        orderId: order._id,
-        orderType: 'fuel',
-        status: status
-      },
-      routing: {
-        screen: 'OrderDetails',
-        params: { 
-          orderId: order._id.toString(),
-          orderType: 'fuel'
-        },
-        action: 'view_order'
-      },
-      priority: 'normal',
-      sentViaFcm: true
-    });
+    // إرسال إشعار تحديث الحالة العام
+    await NotificationService.sendOrderNotification(
+      order._id,
+      'order_status_updated',
+      {
+        oldStatus: oldStatus,
+        newStatus: newStatus,
+        statusText: getStatusText(newStatus)
+      }
+    );
 
-    const notification = new Notification(notificationData);
-    await notification.save();
+    console.log(`📨 إشعار حالة الطلب: ${oldStatus} → ${newStatus}`);
   } catch (error) {
-    console.error('خطأ في إرسال إشعار الحالة:', error);
+    console.error('❌ خطأ في إرسال إشعار تحديث الحالة:', error);
   }
 };
 
-const sendPriceNotification = async (order, price) => {
+// دالة لمتابعة تحديثات الطلب
+exports.updateOrderWithNotifications = async (req, res) => {
   try {
-    const notificationData = validateNotificationData({
-      title: 'تم تحديد السعر',
-      body: `تم تحديد سعر طلبك #${order.orderNumber} - ${price} ريال`,
-      user: order.customerId,
-      broadcast: false,
-      type: 'order_price',
-      data: {
-        orderId: order._id,
-        orderType: 'fuel',
-        price: price
-      },
-      routing: {
-        screen: 'OrderDetails',
-        params: { 
-          orderId: order._id.toString(),
-          orderType: 'fuel'
-        },
-        action: 'view_order'
-      },
-      priority: 'high',
-      sentViaFcm: true
+    const { orderId } = req.params;
+    const updates = req.body;
+    const userId = req.user.userId;
+
+    // جلب الطلب الحالي
+    const oldOrder = await Order.findById(orderId);
+    if (!oldOrder) {
+      return res.status(404).json({
+        success: false,
+        error: 'طلب الوقود غير موجود'
+      });
+    }
+
+    // حفظ الحالة القديمة
+    const oldStatus = oldOrder.status;
+
+    // تحديث الطلب
+    const order = await Order.findOneAndUpdate(
+      { _id: orderId, serviceType: 'fuel' },
+      { $set: updates },
+      { new: true, runValidators: true }
+    )
+    .populate('customerId', 'name phone')
+    .populate('driverId', 'name phone')
+    .populate('approvedBy', 'name');
+
+    // 🔔 إرسال إشعار إذا تغيرت الحالة
+    if (updates.status && updates.status !== oldStatus) {
+      await sendOrderStatusNotification(order, oldStatus, updates.status);
+    }
+
+    res.json({
+      success: true,
+      message: 'تم تحديث الطلب بنجاح',
+      order
     });
 
-    const notification = new Notification(notificationData);
-    await notification.save();
   } catch (error) {
-    console.error('خطأ في إرسال إشعار السعر:', error);
+    console.error('❌ خطأ في تحديث الطلب:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
   }
 };
 
-const sendDriverAssignmentNotification = async (order, driver) => {
+// دالة الحصول على سجل الإشعارات للطلب
+exports.getOrderNotifications = async (req, res) => {
   try {
-    // إشعار للعميل
-    const customerNotificationData = validateNotificationData({
-      title: 'تم تخصيص سائق',
-      body: `تم تخصيص السائق ${driver.name} لطلبك #${order.orderNumber}`,
-      user: order.customerId,
-      broadcast: false,
-      type: 'order_assigned',
-      data: {
-        orderId: order._id,
-        orderType: 'fuel',
-        driverId: driver._id
-      },
-      routing: {
-        screen: 'TrackOrder',
-        params: { 
-          orderId: order._id.toString(),
-          orderType: 'fuel'
-        },
-        action: 'track_order'
-      },
-      priority: 'normal',
-      sentViaFcm: true
+    const { orderId } = req.params;
+    const userId = req.user.userId;
+
+    const order = await Order.findOne({ 
+      _id: orderId, 
+      serviceType: 'fuel' 
     });
 
-    const customerNotification = new Notification(customerNotificationData);
-    await customerNotification.save();
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        error: 'طلب الوقود غير موجود'
+      });
+    }
 
-    // إشعار للسائق
-    const driverNotificationData = validateNotificationData({
-      title: 'طلب جديد مخصص لك',
-      body: `تم تخصيص طلب وقود #${order.orderNumber} لك`,
-      user: driver._id,
-      broadcast: false,
-      type: 'driver_assignment',
-      data: {
-        orderId: order._id,
-        orderType: 'fuel'
-      },
-      routing: {
-        screen: 'OrderDetails',
-        params: { 
-          orderId: order._id.toString(),
-          orderType: 'fuel'
-        },
-        action: 'view_order'
-      },
-      priority: 'normal',
-      sentViaFcm: true
+    // التحقق من صلاحية الوصول
+    const canAccess = 
+      order.customerId.toString() === userId ||
+      (order.driverId && order.driverId.toString() === userId) ||
+      ['admin', 'approval_supervisor', 'monitoring'].includes(req.user.userType);
+
+    if (!canAccess) {
+      return res.status(403).json({
+        success: false,
+        error: 'غير مسموح بالوصول لإشعارات هذا الطلب'
+      });
+    }
+
+    // الحصول على الإحصائيات
+    const stats = await NotificationService.getNotificationStats(userId, req.user.userType);
+
+    res.json({
+      success: true,
+      stats,
+      orderId,
+      orderNumber: order.orderNumber
     });
 
-    const driverNotification = new Notification(driverNotificationData);
-    await driverNotification.save();
   } catch (error) {
-    console.error('خطأ في إرسال إشعار تخصيص السائق:', error);
-  }
-};
-
-const sendTrackingNotification = async (order, status) => {
-  try {
-    const notificationData = validateNotificationData({
-      title: 'تحديث التتبع',
-      body: `تم تحديث حالة التوصيل لطلبك #${order.orderNumber} إلى ${getStatusText(status)}`,
-      user: order.customerId,
-      broadcast: false,
-      type: 'order_status',
-      data: {
-        orderId: order._id,
-        orderType: 'fuel',
-        status: status
-      },
-      routing: {
-        screen: 'TrackOrder',
-        params: { 
-          orderId: order._id.toString(),
-          orderType: 'fuel'
-        },
-        action: 'track_order'
-      },
-      priority: 'normal',
-      sentViaFcm: true
+    console.error('❌ خطأ في جلب إشعارات الطلب:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
     });
-
-    const notification = new Notification(notificationData);
-    await notification.save();
-  } catch (error) {
-    console.error('خطأ في إرسال إشعار التتبع:', error);
   }
-};
-
-// تصدير الدوال المساعدة للاختبار إذا لزم الأمر
-module.exports._testHelpers = {
-  validateNotificationData,
-  getStatusText,
-  generateDeliveryCode
 };

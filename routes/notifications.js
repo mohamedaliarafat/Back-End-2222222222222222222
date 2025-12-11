@@ -10,6 +10,7 @@ router.get('/my-notifications', authenticate, notificationController.getUserNoti
 router.get('/stats', authenticate, notificationController.getNotificationStats);
 router.patch('/:notificationId/read', authenticate, notificationController.markAsRead);
 router.patch('/mark-all-read', authenticate, notificationController.markAllAsRead);
+router.post('/register-fcm', authenticate, notificationController.registerFcmToken);
 
 // 🔹 Routes للمدراء والمشرفين
 router.post('/', authenticate, checkRole(['admin', 'monitoring']), notificationController.createNotification);
@@ -19,6 +20,12 @@ router.post('/send-order', authenticate, checkRole(['admin', 'supervisor']), not
 router.post('/send-auth', authenticate, checkRole(['admin']), notificationController.sendAuthNotification);
 router.post('/send-payment', authenticate, checkRole(['admin', 'supervisor']), notificationController.sendPaymentNotification);
 router.delete('/:notificationId', authenticate, checkRole(['admin', 'monitoring']), notificationController.deleteNotification);
+router.post(
+  '/assign-driver',
+  authenticate,
+  checkRole(['admin', 'supervisor']),
+  notificationController.assignDriver
+);
 
 // 🔹 Routes للصيانة والمراقبة
 router.get('/system-status', authenticate, checkRole(['admin', 'supervisor']), notificationController.getSystemStatus);
