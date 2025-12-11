@@ -1,13 +1,16 @@
 # Ignore environment variables
 .env
 
+# Ignore Firebase service account keys
+config/firebaseServiceAccount.json
+
 # Ignore system files
 .DS_Store
 Thumbs.db
 
-# Ignore dependency folders
+# Ignore Node.js dependencies
 node_modules/
+
+# Ignore build outputs
 build/
 dist/
-".env" 
-".env" 
