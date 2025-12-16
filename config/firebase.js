@@ -1,121 +1,114 @@
 // config/firebase.js
 require('dotenv').config();
 const admin = require('firebase-admin');
-const fs = require('fs');
-const path = require('path');
-const User = require('../models/User'); // ✅ مهم جدًا
 
 let firebaseInitialized = false;
 let bucket = null;
 let messaging = null;
 
-// تحميل ملف Service Account
-function loadServiceAccount() {
-  const localPath = path.resolve(__dirname, './firebaseServiceAccount.json');
-
-  if (!fs.existsSync(localPath)) {
-    console.error('❌ firebaseServiceAccount.json not found');
-    return null;
-  }
-
-  try {
-    return require(localPath);
-  } catch (err) {
-    console.error('❌ Failed loading service account:', err.message);
-    return null;
-  }
-}
-
 try {
-  const serviceAccount = loadServiceAccount();
-  if (!serviceAccount) throw new Error("Missing service account file");
+  // ✅ Firebase via Environment Variables (Render / Production)
+  if (
+    process.env.FIREBASE_PROJECT_ID &&
+    process.env.FIREBASE_CLIENT_EMAIL &&
+    process.env.FIREBASE_PRIVATE_KEY
+  ) {
+    if (!admin.apps.length) {
+      admin.initializeApp({
+        credential: admin.credential.cert({
+          projectId: process.env.FIREBASE_PROJECT_ID,
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+          privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+        }),
+        storageBucket: `${process.env.FIREBASE_PROJECT_ID}.appspot.com`,
+      });
+    }
 
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-    storageBucket: "albuhairaalarabia2026.appspot.com"
-  });
+    firebaseInitialized = true;
 
-  firebaseInitialized = true;
-  console.log("✅ Firebase initialized!");
+    console.log('🔥 Firebase initialized (ENV)');
+    console.log(`📧 ${process.env.FIREBASE_CLIENT_EMAIL}`);
+    console.log(`🏢 ${process.env.FIREBASE_PROJECT_ID}`);
+  } else {
+    console.warn('⚠ Firebase ENV variables missing — running in LOCAL mode');
+  }
 } catch (error) {
-  console.error("❌ Firebase init failed:", error.message);
+  console.error('❌ Firebase init failed:', error.message);
 }
 
 if (firebaseInitialized) {
-  try { bucket = admin.storage().bucket(); } catch {}
-  try { messaging = admin.messaging(); } catch {}
+  try { bucket = admin.storage().bucket(); } catch { bucket = null; }
+  try { messaging = admin.messaging(); } catch { messaging = null; }
 }
 
-// ========================================
-// 🔔 SEND FCM NOTIFICATION (FINAL)
-// ========================================
+// ===============================
+//   🔥 FCM FUNCTION (SDK v11+)
+// ===============================
 async function sendFCMNotification(tokens, notification, data = {}) {
   if (!firebaseInitialized || !messaging) {
-    console.log("📱 [LOCAL MODE] Simulated FCM");
+    console.log("📱 [LOCAL MODE] Simulated FCM:", { tokens, notification, data });
     return { success: true };
   }
 
-  if (typeof tokens === "string") tokens = [tokens];
-  if (!Array.isArray(tokens) || tokens.length === 0) {
-    console.log("⚠ No FCM tokens provided");
-    return { success: false };
-  }
-
-  const payloads = tokens.map(token => ({
-    token,
-    notification: {
-      title: notification.title,
-      body: notification.body
-    },
-    data: convertToStringData({
-      ...data,
-      notificationId: notification._id?.toString() || '',
-      type: notification.type || ''
-    }),
-    android: { priority: "high" },
-    apns: { payload: { aps: { sound: "default", badge: 1 } } }
-  }));
-
-  const rawResult = await messaging.sendEach(payloads);
-  const results = rawResult.responses || [];
-
-  let successCount = 0;
-  let failureCount = 0;
-
-  for (let i = 0; i < results.length; i++) {
-    const r = results[i];
-    if (r.success) {
-      successCount++;
-    } else {
-      failureCount++;
-      const token = tokens[i];
-      const code = r.error?.errorInfo?.code || r.error?.code;
-
-      console.log(`❌ Token Failed`, token, code);
-
-      if (code === 'messaging/registration-token-not-registered') {
-        await User.updateMany(
-          { fcmTokens: token },
-          { $pull: { fcmTokens: token } }
-        );
-        console.log('🧹 Invalid token removed:', token);
-      }
+  try {
+    if (typeof tokens === "string") tokens = [tokens];
+    if (!Array.isArray(tokens) || tokens.length === 0) {
+      console.log("⚠ No FCM tokens provided");
+      return { success: false };
     }
-  }
 
-  console.log(`📨 FCM sent => success: ${successCount}, failed: ${failureCount}`);
-  return { success: true, result: { successCount, failureCount } };
+    const payloads = tokens.map(token => ({
+      token,
+      notification: {
+        title: notification.title,
+        body: notification.body,
+      },
+      data: {
+        ...convertToStringData(data),
+        notificationId: String(notification._id || ''),
+        type: String(notification.type || ''),
+      },
+      android: { priority: "high" },
+      apns: {
+        payload: {
+          aps: { sound: "default", badge: 1 },
+        },
+      },
+    }));
+
+    const rawResult = await messaging.sendEach(payloads);
+
+    const results =
+      Array.isArray(rawResult) ? rawResult :
+      rawResult.responses ? rawResult.responses :
+      rawResult.results ? rawResult.results :
+      [rawResult];
+
+    const successCount = results.filter(r => r.success).length;
+    const failureCount = results.length - successCount;
+
+    console.log(`📨 FCM sent => success: ${successCount}, failed: ${failureCount}`);
+
+    results.forEach((r, i) => {
+      if (!r.success) {
+        console.log(`❌ Token Failed [${i}]`, tokens[i], r.error || r);
+      }
+    });
+
+    return { success: true, result: { successCount, failureCount } };
+
+  } catch (error) {
+    console.error("❌ FCM Error:", error);
+    return { success: false, error };
+  }
 }
 
 function convertToStringData(obj) {
   const result = {};
-  for (const k in obj) {
-    result[k] =
-      obj[k] === undefined || obj[k] === null
-        ? ''
-        : typeof obj[k] === 'object'
-        ? JSON.stringify(obj[k])
-        : String(obj[k]);
+  for (const key in obj) {
+    if (obj[key] === undefined || obj[key] === null) result[key] = "";
+    else if (typeof obj[key] === "object") result[key] = JSON.stringify(obj[key]);
+    else result[key] = String(obj[key]);
   }
   return result;
 }
@@ -125,5 +118,5 @@ module.exports = {
   bucket,
   messaging,
   sendFCMNotification,
-  isFirebaseInitialized: () => firebaseInitialized
+  isFirebaseInitialized: () => firebaseInitialized,
 };
