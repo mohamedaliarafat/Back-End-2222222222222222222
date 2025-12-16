@@ -1511,7 +1511,7 @@ exports.assignOrderDriver = async (req, res) => {
       });
     }
 
-    // ✅ تحقق من السائق
+    // ✅ جلب السائق
     const driver = await User.findOne({
       _id: driverId,
       userType: 'driver',
@@ -1525,7 +1525,7 @@ exports.assignOrderDriver = async (req, res) => {
       });
     }
 
-    // 🔍 1) البحث عن طلب نشط للسائق
+    // 🔍 التحقق من وجود طلب نشط
     const activeOrder = await Order.findOne({
       driverId,
       serviceType: 'fuel',
@@ -1540,7 +1540,6 @@ exports.assignOrderDriver = async (req, res) => {
       }
     });
 
-    // 🛑 2) لو فيه طلب نشط ومش مسموح استبدال
     if (activeOrder && !allowReplace) {
       return res.status(400).json({
         success: false,
@@ -1549,15 +1548,15 @@ exports.assignOrderDriver = async (req, res) => {
       });
     }
 
-    // 🔁 3) لو فيه طلب نشط ومسموح الاستبدال
+    // 🔁 فك الطلب القديم لو مسموح
     if (activeOrder && allowReplace) {
       activeOrder.driverId = null;
-      activeOrder.status = 'approved'; // أو pending حسب نظامك
+      activeOrder.status = 'approved';
       activeOrder.unassignedAt = new Date();
       await activeOrder.save();
     }
 
-    // ✅ 4) تعيين الطلب الجديد
+    // ✅ تعيين الطلب الجديد
     const order = await Order.findOneAndUpdate(
       { _id: orderId, serviceType: 'fuel' },
       {
@@ -1567,8 +1566,8 @@ exports.assignOrderDriver = async (req, res) => {
       },
       { new: true }
     )
-    .populate('customerId', 'name phone')
-    .populate('driverId', 'name phone');
+      .populate('customerId', 'name phone')
+      .populate('driverId', 'name phone');
 
     if (!order) {
       return res.status(404).json({
@@ -1577,27 +1576,45 @@ exports.assignOrderDriver = async (req, res) => {
       });
     }
 
-    // 🔔 إشعار تلقائي
+    // ===============================
+    // 🔔 1️⃣ إشعار للعميل (DB + Push)
+    // ===============================
     await NotificationService.sendOrderNotification(
-      order._id,
-      'order_assigned_to_driver',
-      {
-        driverName: driver.name,
-        driverPhone: driver.phone
-      }
-    );
+        order._id,
+        'order_assigned_to_driver',
+        {
+          driverName: driver.name,
+          driverPhone: driver.phone
+        }
+      );
+    // ===============================
+    // 🔔 2️⃣ إشعار مباشر للسائق (🔥 المهم)
+    // ===============================
+    if (driver.fcmTokens && driver.fcmTokens.length > 0) {
+      await NotificationService.sendToSpecificUser({
+        userId: driver._id,
+        tokens: driver.fcmTokens,
+        title: '🚚 تم تعيينك لطلب جديد',
+data: {
+  type: 'order_assigned_to_driver',
+  orderId: order._id.toString()
+}
+
+      });
+
+      console.log('✅ Push notification sent to driver');
+    } else {
+      console.warn('⚠️ السائق لا يملك FCM Tokens');
+    }
 
     console.log('✅ تم تخصيص سائق:', {
       orderId: order._id,
-      driverId: driver._id,
-      replaced: !!activeOrder
+      driverId: driver._id
     });
 
     return res.json({
       success: true,
-      message: activeOrder
-        ? 'تم استبدال الطلب القديم وتعيين السائق للطلب الجديد'
-        : 'تم تخصيص السائق للطلب بنجاح',
+      message: 'تم تخصيص السائق للطلب بنجاح',
       order
     });
 
@@ -1609,6 +1626,7 @@ exports.assignOrderDriver = async (req, res) => {
     });
   }
 };
+
 
 
 // 📍 تحديث تتبع طلب الوقود (للسائق) مع الإشعارات

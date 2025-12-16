@@ -400,6 +400,8 @@ async sendToUser(userId, notificationData) {
     return await this.sendToGroup(config.target, { title: config.title, body: config.body, type, priority: config.priority, data: additionalData });
   }
 
+  
+
   // 🔹 إشعارات Fuel و Offers و Chat و Call و Driver و System
   async sendFuelNotification(orderId, type, additionalData = {}) { return await this.sendOrderNotification(orderId, type, additionalData); }
   async sendOfferNotification(type, additionalData = {}) {
@@ -550,6 +552,56 @@ async sendToUser(userId, notificationData) {
       throw error;
     }
   }
+
+ async sendToSpecificUser({
+    userId,
+    tokens,
+    title,
+    body,
+    data = {}
+  }) {
+    try {
+      if (!tokens || tokens.length === 0) {
+        console.warn('⚠️ No FCM tokens for user:', userId);
+        return;
+      }
+
+      // 1️⃣ حفظ الإشعار في قاعدة البيانات
+      const notification = new Notification({
+        title,
+        body,
+        targetUsers: [userId],
+        type: data.type || 'system',
+        data
+      });
+
+      await notification.save();
+
+      // 2️⃣ إرسال Push Notification
+      const message = {
+        notification: {
+          title,
+          body
+        },
+        data: {
+          ...data,
+          click_action: 'FLUTTER_NOTIFICATION_CLICK'
+        },
+        tokens
+      };
+
+      const response = await admin.messaging().sendEachForMulticast(message);
+
+      console.log('✅ Push sent to user:', userId, {
+        success: response.successCount,
+        failed: response.failureCount
+      });
+
+    } catch (error) {
+      console.error('❌ Error sending notification to specific user:', error);
+    }
+  }
+
 }
 
 module.exports = new NotificationService();
