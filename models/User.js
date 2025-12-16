@@ -8,36 +8,38 @@ const UserSchema = new mongoose.Schema(
       type: String,
       default: "customer",
       enum: ["customer", "driver", "approval_supervisor", "monitoring", "admin"],
+      index: true
     },
 
-    // 🔑 بيانات الدخول الأساسية
-    phone: { 
-      type: String, 
+    // 🔑 بيانات الدخول
+    phone: {
+      type: String,
       required: true,
-      unique: true 
+      unique: true,
+      index: true
     },
-    password: { 
-      type: String, 
-      required: true 
+    password: {
+      type: String,
+      required: true
     },
 
-    // 📞 التحقق من الهاتف
-    isVerified: { 
-      type: Boolean, 
-      default: false 
+    // 📞 التحقق
+    isVerified: {
+      type: Boolean,
+      default: false
     },
 
     // 👤 البيانات الشخصية
+    name: {
+      type: String,
+      default: ""
+    },
     profileImage: {
       type: String,
-      default: "https://c.top4top.io/p_3613ezehd1.png",
-    },
-    name: { 
-      type: String, 
-      default: "" 
+      default: "https://c.top4top.io/p_3613ezehd1.png"
     },
 
-    // 📍 الموقع (للسائقين)
+    // 📍 الموقع (مستخدم للسائقين)
     location: {
       lat: { type: Number, default: 0 },
       lng: { type: Number, default: 0 },
@@ -45,61 +47,76 @@ const UserSchema = new mongoose.Schema(
       lastUpdated: { type: Date, default: null }
     },
 
+    // 🔌 حالة الاتصال (للسائق)
+    isOnline: {
+      type: Boolean,
+      default: false,
+      index: true
+    },
+
     // 🏠 العناوين (للعملاء)
-    addresses: [{ 
-      type: mongoose.Schema.Types.ObjectId, 
-      ref: "Address" 
-    }],
+    addresses: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Address"
+      }
+    ],
 
     // 🛒 الطلبات
-    orders: [{ 
-      type: mongoose.Schema.Types.ObjectId, 
-      ref: "Order" 
-    }],
+    orders: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Order"
+      }
+    ],
 
-    // 👥 للموظفين (تمت إضافتهم بواسطة الإدمن)
-    addedBy: { 
-      type: mongoose.Schema.Types.ObjectId, 
-      ref: "User" 
+    // 👥 من أضاف المستخدم (للإدمن)
+    addedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null
     },
 
-    // ✅ حالة الحساب
-    isActive: { 
-      type: Boolean, 
-      default: true 
+    // ✅ حالة الحساب (إيقاف / تفعيل)
+    isActive: {
+      type: Boolean,
+      default: true,
+      index: true
     },
-    lastLogin: { 
-      type: Date, 
-      default: null 
-    },
-    lastSeen: { 
-      type: Date, 
-      default: null 
-    }, 
 
+    // ⏱️ نشاط المستخدم
+    lastLogin: {
+      type: Date,
+      default: null
+    },
+    lastSeen: {
+      type: Date,
+      default: null
+    },
+
+    // 🔔 Firebase Tokens
     fcmTokens: {
-  type: [String],
-  default: []
-},
-
+      type: [String],
+      default: []
+    },
 
     // 📋 الملف الشخصي الكامل (للسائقين)
-    completeProfile: { 
-      type: mongoose.Schema.Types.ObjectId, 
-      ref: "CompleteProfile", 
-      default: null 
-    },
-
+    completeProfile: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "CompleteProfile",
+      default: null
+    }
   },
-  { 
-    timestamps: true 
+  {
+    timestamps: true
   }
 );
 
-// ✅ إصلاح الـ middleware لتشفير كلمة المرور
+//
+// 🔐 تشفير كلمة المرور
+//
 UserSchema.pre("save", async function (next) {
   try {
-    // فقط إذا تم تعديل كلمة المرور وكانت موجودة
     if (this.isModified("password") && this.password) {
       const salt = await bcrypt.genSalt(10);
       this.password = await bcrypt.hash(this.password, salt);
@@ -110,19 +127,17 @@ UserSchema.pre("save", async function (next) {
   }
 });
 
-// ✅ مقارنة كلمة المرور
+//
+// 🔑 مقارنة كلمة المرور
+//
 UserSchema.methods.comparePassword = async function (enteredPassword) {
-  try {
-    return await bcrypt.compare(enteredPassword, this.password);
-  } catch (error) {
-    throw new Error("خطأ في مقارنة كلمة المرور");
-  }
+  return bcrypt.compare(enteredPassword, this.password);
 };
 
-// ✅ الفهارس
-UserSchema.index({ phone: 1 });
-UserSchema.index({ userType: 1 });
-UserSchema.index({ isActive: 1 });
+//
+// 📌 Indexes إضافية
+//
+UserSchema.index({ "location.lat": 1, "location.lng": 1 });
 UserSchema.index({ createdAt: -1 });
 
 module.exports = mongoose.models.User || mongoose.model("User", UserSchema);

@@ -135,77 +135,217 @@ async sendToUser(userId, notificationData) {
 
 
   // 🔹 إشعارات دورة حياة الطلب
-  async sendOrderNotification(orderId, type, additionalData = {}) {
-    try {
-      const order = await Order.findById(orderId)
-        .populate('customerId', 'name fcmToken userType')
-        .populate('driverId', 'name fcmToken userType');
-      if (!order) throw new Error('الطلب غير موجود');
+ async sendOrderNotification(orderId, type, additionalData = {}) {
+  try {
+    if (!orderId) {
+      console.warn('⚠️ sendOrderNotification called without orderId');
+      return [];
+    }
 
-      const notificationConfigs = {
-        order_new: { title: 'طلب وقود جديد 🚗', body: `طلب جديد #${order.orderNumber} بانتظار التعيين`, target: ['all_drivers', 'all_supervisors'], priority: 'high' },
-        order_confirmed: { title: 'تم تأكيد طلبك ✅', body: `تم تأكيد طلبك #${order.orderNumber} وسيتم تعيين سائق قريباً`, target: 'customer', priority: 'normal' },
-        order_price_set: { title: 'تم تحديد سعر الطلب 💰', body: `تم تحديد السعر النهائي لطلبك #${order.orderNumber} - ${order.finalPrice || order.totalAmount} ر.س`, target: 'customer', priority: 'normal' },
-        order_waiting_payment: { title: 'في انتظار الدفع ⏳', body: `الطلب #${order.orderNumber} في انتظار الدفع - ${order.finalPrice || order.totalAmount} ر.س`, target: 'customer', priority: 'high' },
-        order_payment_verified: { title: 'تم التحقق من الدفع ✅', body: `تم التحقق من الدفع للطلب #${order.orderNumber}`, target: ['customer', 'all_supervisors'], priority: 'normal' },
-        order_processing: { title: 'جاري تجهيز طلبك 🔄', body: `طلبك #${order.orderNumber} جاري تجهيزه للتسليم`, target: 'customer', priority: 'normal' },
-        order_ready_for_delivery: { title: 'طلب جاهز للتسليم 📦', body: `الطلب #${order.orderNumber} جاهز للتسليم`, target: 'all_drivers', priority: 'high' },
-        order_assigned_to_driver: { title: order.customerId ? 'تم تعيين سائق 🚗' : 'تم تعيين طلب لك 🚗', body: order.customerId ? `تم تعيين السائق ${order.driverId?.name || 'سائق'} لطلبك #${order.orderNumber}` : `تم تعيين الطلب #${order.orderNumber} لك للتسليم`, target: order.customerId ? ['customer', 'driver'] : 'driver', priority: 'normal' },
-        order_picked_up: { title: 'تم استلام الطلب ✅', body: `تم استلام طلبك #${order.orderNumber} من قبل السائق`, target: 'customer', priority: 'normal' },
-        order_in_transit: { title: 'في الطريق إليك 🛵', body: `السائق في طريقه لتسليم طلبك #${order.orderNumber}`, target: 'customer', priority: 'normal' },
-        order_delivered: { title: 'تم التسليم 🎉', body: `تم تسليم طلبك #${order.orderNumber} بنجاح`, target: ['customer', 'all_supervisors'], priority: 'normal' },
-        order_completed: { title: 'طلب مكتمل ✅', body: `تم إكمال الطلب #${order.orderNumber} بنجاح. شكراً لثقتك!`, target: 'customer', priority: 'normal' },
-        order_cancelled: { title: 'طلب ملغي ❌', body: `تم إلغاء الطلب #${order.orderNumber}`, target: ['customer', 'all_supervisors'], priority: 'high' },
-        order_status_updated: { title: 'تم تحديث حالة الطلب 📝', body: `تم تحديث حالة الطلب #${order.orderNumber} إلى ${additionalData.status || 'حالة جديدة'}`, target: ['customer', 'driver'].filter(Boolean), priority: 'normal' }
-      };
+    const order = await Order.findById(orderId)
+      .populate('customerId', 'name fcmTokens userType')
+      .populate('driverId', 'name fcmTokens userType');
 
-      const config = notificationConfigs[type];
-      if (!config) throw new Error(`نوع الإشعار غير معروف: ${type}`);
+    // ❗ لا نكسر السيستم لو الطلب غير موجود
+    if (!order) {
+      console.warn('⚠️ Order not found, skip notification:', orderId);
+      return [];
+    }
 
-      const results = [];
-      const targets = Array.isArray(config.target) ? config.target : [config.target];
+    const finalPrice = order.pricing?.finalPrice || 0;
 
-      for (const target of targets) {
-        let result;
-        if (target === 'customer' && order.customerId) {
-          result = await this.sendToUser(order.customerId._id, {
-            title: config.title,
-            body: config.body,
-            type,
-            priority: config.priority,
-            data: { orderId: order._id, orderNumber: order.orderNumber, amount: order.finalPrice || order.totalAmount, status: order.status, ...additionalData },
-            routing: { screen: 'OrderDetails', params: { orderId: order._id.toString() } }
-          });
-        } else if (target === 'driver' && order.driverId) {
-          result = await this.sendToUser(order.driverId._id, {
-            title: config.title,
-            body: config.body,
-            type,
-            priority: config.priority,
-            data: { orderId: order._id, orderNumber: order.orderNumber, amount: order.finalPrice || order.totalAmount, status: order.status, ...additionalData },
-            routing: { screen: 'OrderDetails', params: { orderId: order._id.toString() } }
-          });
-        } else if (target.startsWith('all_')) {
-          result = await this.sendToGroup(target, {
-            title: config.title,
-            body: config.body,
-            type,
-            priority: config.priority,
-            data: { orderId: order._id, orderNumber: order.orderNumber, amount: order.finalPrice || order.totalAmount, ...additionalData },
-            routing: { screen: 'OrderDetails', params: { orderId: order._id.toString() } }
-          });
-        }
-        if (result) results.push(result);
+    const notificationConfigs = {
+      order_new: {
+        title: 'طلب وقود جديد 🚗',
+        body: `طلب جديد #${order.orderNumber} بانتظار التعيين`,
+        target: ['all_drivers', 'all_supervisors'],
+        priority: 'high'
+      },
+
+      order_confirmed: {
+        title: 'تم تأكيد طلبك ✅',
+        body: `تم تأكيد طلبك #${order.orderNumber} وسيتم تعيين سائق قريباً`,
+        target: 'customer',
+        priority: 'normal'
+      },
+
+      order_price_set: {
+        title: 'تم تحديد سعر الطلب 💰',
+        body: `تم تحديد السعر النهائي لطلبك #${order.orderNumber} - ${finalPrice} ر.س`,
+        target: 'customer',
+        priority: 'normal'
+      },
+
+      order_waiting_payment: {
+        title: 'في انتظار الدفع ⏳',
+        body: `الطلب #${order.orderNumber} في انتظار الدفع - ${finalPrice} ر.س`,
+        target: 'customer',
+        priority: 'high'
+      },
+
+      order_payment_verified: {
+        title: 'تم التحقق من الدفع ✅',
+        body: `تم التحقق من الدفع للطلب #${order.orderNumber}`,
+        target: ['customer', 'all_supervisors'],
+        priority: 'normal'
+      },
+
+      order_processing: {
+        title: 'جاري تجهيز طلبك 🔄',
+        body: `طلبك #${order.orderNumber} جاري تجهيزه للتسليم`,
+        target: 'customer',
+        priority: 'normal'
+      },
+
+      order_ready_for_delivery: {
+        title: 'طلب جاهز للتسليم 📦',
+        body: `الطلب #${order.orderNumber} جاهز للتسليم`,
+        target: 'all_drivers',
+        priority: 'high'
+      },
+
+      order_assigned_to_driver: {
+        title: order.customerId ? 'تم تعيين سائق 🚗' : 'تم تعيين طلب لك 🚗',
+        body: order.customerId
+          ? `تم تعيين السائق ${order.driverId?.name || 'سائق'} لطلبك #${order.orderNumber}`
+          : `تم تعيين الطلب #${order.orderNumber} لك للتسليم`,
+        target: order.customerId ? ['customer', 'driver'] : 'driver',
+        priority: 'normal'
+      },
+
+      order_picked_up: {
+        title: 'تم استلام الطلب ✅',
+        body: `تم استلام طلبك #${order.orderNumber} من قبل السائق`,
+        target: 'customer',
+        priority: 'normal'
+      },
+
+      order_in_transit: {
+        title: 'في الطريق إليك 🛵',
+        body: `السائق في طريقه لتسليم طلبك #${order.orderNumber}`,
+        target: 'customer',
+        priority: 'normal'
+      },
+
+      order_delivered: {
+        title: 'تم التسليم 🎉',
+        body: `تم تسليم طلبك #${order.orderNumber} بنجاح`,
+        target: ['customer', 'all_supervisors'],
+        priority: 'normal'
+      },
+
+      order_completed: {
+        title: 'طلب مكتمل ✅',
+        body: `تم إكمال الطلب #${order.orderNumber} بنجاح. شكراً لثقتك!`,
+        target: 'customer',
+        priority: 'normal'
+      },
+
+      order_cancelled: {
+        title: 'طلب ملغي ❌',
+        body: `تم إلغاء الطلب #${order.orderNumber}`,
+        target: ['customer', 'all_supervisors'],
+        priority: 'high'
+      },
+
+      order_status_updated: {
+        title: 'تم تحديث حالة الطلب 📝',
+        body: `تم تحديث حالة الطلب #${order.orderNumber} إلى ${additionalData.status || 'حالة جديدة'}`,
+        target: ['customer', 'driver'],
+        priority: 'normal'
+      }
+    };
+
+    const config = notificationConfigs[type];
+    if (!config) {
+      console.warn('⚠️ Unknown order notification type:', type);
+      return [];
+    }
+
+    const targets = Array.isArray(config.target)
+      ? config.target
+      : [config.target];
+
+    const results = [];
+
+    for (const target of targets) {
+      let result;
+
+      // 👤 العميل
+      if (target === 'customer' && order.customerId) {
+        result = await this.sendToUser(order.customerId._id, {
+          title: config.title,
+          body: config.body,
+          type,
+          priority: config.priority,
+          data: {
+            orderId: order._id.toString(),
+            orderNumber: order.orderNumber,
+            amount: finalPrice,
+            status: order.status,
+            ...additionalData
+          },
+          routing: {
+            screen: 'OrderDetails',
+            params: { orderId: order._id.toString() }
+          }
+        });
       }
 
-      console.log(`✅ Order notification sent: ${type} for order #${order.orderNumber}`);
-      return results;
+      // 🚗 السائق
+      else if (target === 'driver' && order.driverId) {
+        result = await this.sendToUser(order.driverId._id, {
+          title: config.title,
+          body: config.body,
+          type,
+          priority: config.priority,
+          data: {
+            orderId: order._id.toString(),
+            orderNumber: order.orderNumber,
+            amount: finalPrice,
+            status: order.status,
+            ...additionalData
+          },
+          routing: {
+            screen: 'OrderDetails',
+            params: { orderId: order._id.toString() }
+          }
+        });
+      }
 
-    } catch (error) {
-      console.error('Error sending order notification:', error);
-      throw error;
+      // 👥 مجموعات
+      else if (target.startsWith('all_')) {
+        result = await this.sendToGroup(target, {
+          title: config.title,
+          body: config.body,
+          type,
+          priority: config.priority,
+          data: {
+            orderId: order._id.toString(),
+            orderNumber: order.orderNumber,
+            amount: finalPrice,
+            ...additionalData
+          },
+          routing: {
+            screen: 'OrderDetails',
+            params: { orderId: order._id.toString() }
+          }
+        });
+      }
+
+      if (result) results.push(result);
     }
+
+    console.log(`✅ Order notification sent: ${type} for order #${order.orderNumber}`);
+    return results;
+
+  } catch (error) {
+    // ❌ ممنوع throw
+    console.error('❌ sendOrderNotification failed:', error.message);
+    return [];
   }
+}
+
 
   // 🔹 إشعارات عامة (مصادقة، الملف الشخصي، الدفع، إدارة، عروض، محادثات)
   async sendAuthNotification(userId, type, additionalData = {}) {

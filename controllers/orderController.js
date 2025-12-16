@@ -916,83 +916,116 @@ exports.createOrder = async (req, res) => {
       vehicleInfo
     });
 
-    // إنشاء طلب الوقود
-    const order = new Order({
-      customerId: userId,
-      serviceType: 'fuel',
-      description: `طلب وقود ${fuelType} - ${fuelLiters} لتر`,
-      
-      // معلومات التسليم
-      deliveryLocation: {
-        address: deliveryLocation?.address || '',
-        coordinates: {
-          lat: deliveryLocation?.coordinates?.lat || 0,
-          lng: deliveryLocation?.coordinates?.lng || 0
-        },
-        contactName: deliveryLocation?.contactName || '',
-        contactPhone: deliveryLocation?.contactPhone || '',
-        instructions: deliveryLocation?.instructions || ''
-      },
+    // 🛑 تحقق مبدئي
+    if (!fuelType || !fuelLiters || !deliveryLocation) {
+      return res.status(400).json({
+        success: false,
+        message: 'بيانات الطلب غير مكتملة'
+      });
+    }
 
-      // معلومات الوقود
-      fuelDetails: {
-        fuelType: fuelType || '',
-        fuelLiters: fuelLiters || 0,
-        fuelTypeName: getFuelTypeName(fuelType)
-      },
+    let order;
+    let attempts = 0;
+    const MAX_RETRIES = 3;
 
-      // معلومات المركبة
-      vehicleInfo: vehicleInfo || {
-        type: '',
-        model: '',
-        licensePlate: '',
-        color: ''
-      },
+    // 🔁 Retry loop لحل مشكلة duplicate orderNumber
+    while (attempts < MAX_RETRIES) {
+      try {
+        order = new Order({
+          customerId: userId,
+          serviceType: 'fuel',
 
-      // التسعير
-      pricing: {
-        estimatedPrice: 0,
-        finalPrice: 0,
-        priceVisible: false,
-        fuelPricePerLiter: 0,
-        serviceFee: 0
-      },
+          description: `طلب وقود ${fuelType} - ${fuelLiters} لتر`,
 
-      // الدفع
-      payment: {
-        status: 'hidden',
-        proof: {
-          image: '',
-          bankName: '',
-          accountNumber: '',
-          amount: 0
+          // 📍 معلومات التسليم
+          deliveryLocation: {
+            address: deliveryLocation.address || '',
+            coordinates: {
+              lat: deliveryLocation.coordinates?.lat || 0,
+              lng: deliveryLocation.coordinates?.lng || 0
+            },
+            contactName: deliveryLocation.contactName || '',
+            contactPhone: deliveryLocation.contactPhone || '',
+            instructions: deliveryLocation.instructions || ''
+          },
+
+          // ⛽ معلومات الوقود
+          fuelDetails: {
+            fuelType,
+            fuelLiters,
+            fuelTypeName: getFuelTypeName(fuelType)
+          },
+
+          // 🚗 معلومات المركبة
+          vehicleInfo: vehicleInfo || {
+            type: '',
+            model: '',
+            licensePlate: '',
+            color: ''
+          },
+
+          // 💰 التسعير
+          pricing: {
+            estimatedPrice: 0,
+            finalPrice: 0,
+            priceVisible: false,
+            fuelPricePerLiter: 0,
+            serviceFee: 0
+          },
+
+          // 💳 الدفع
+          payment: {
+            status: 'hidden'
+          },
+
+          // 📝 الملاحظات
+          customerNotes: customerNotes || notes || '',
+          notes: notes || '',
+
+          // 📊 الحالة
+          status: 'pending',
+          submittedAt: new Date()
+        });
+
+        // 🔢 حساب السعر التقديري
+        order.calculateEstimatedPrice();
+
+        // 💾 حفظ الطلب
+        await order.save();
+
+        // ✅ لو نجح الحفظ نخرج فورًا
+        break;
+
+      } catch (err) {
+        // ❌ Duplicate key → جرّب مرة أخرى
+        if (err.code === 11000 && err.keyPattern?.orderNumber) {
+          attempts++;
+          console.warn(
+            `⚠️ Duplicate orderNumber detected, retry ${attempts}/${MAX_RETRIES}`
+          );
+          continue;
         }
-      },
 
-      // الملاحظات
-      customerNotes: customerNotes || notes || '',
-      notes: notes || '',
+        // ❌ أي خطأ آخر
+        throw err;
+      }
+    }
 
-      // الحالة
-      status: 'pending',
-      submittedAt: new Date()
-    });
+    // 🛑 فشل بعد retries
+    if (!order || !order._id) {
+      return res.status(500).json({
+        success: false,
+        message: 'تعذر إنشاء الطلب، حاول مرة أخرى'
+      });
+    }
 
-    // حساب السعر التقديري
-    order.calculateEstimatedPrice();
-
-    // حفظ في قاعدة البيانات
-    await order.save();
-
-    console.log('✅ تم حفظ طلب الوقود في قاعدة البيانات:', {
+    console.log('✅ تم حفظ طلب الوقود:', {
       id: order._id,
       orderNumber: order.orderNumber,
       estimatedPrice: order.pricing.estimatedPrice
     });
 
-    // 🔔 إرسال إشعارات تلقائية
-    
-    // 1. إشعار للعميل (تأكيد الطلب)
+    // 🔔 إشعار للعميل
     await NotificationService.sendOrderNotification(
       order._id,
       'order_confirmed',
@@ -1002,13 +1035,13 @@ exports.createOrder = async (req, res) => {
       }
     );
 
-    // 2. إشعار للمشرفين (طلب جديد)
+    // 🔔 إشعار للإدارة
     await NotificationService.sendOrderNotification(
       order._id,
       'order_new'
     );
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: 'تم إنشاء طلب الوقود بنجاح',
       order: {
@@ -1026,10 +1059,11 @@ exports.createOrder = async (req, res) => {
 
   } catch (error) {
     console.error('❌ خطأ في إنشاء طلب الوقود:', error);
-    res.status(500).json({
+
+    return res.status(500).json({
       success: false,
-      error: error.message,
-      message: 'فشل في إنشاء طلب الوقود'
+      message: 'فشل في إنشاء طلب الوقود',
+      error: error.message
     });
   }
 };
@@ -1464,14 +1498,12 @@ exports.finalApproveOrder = async (req, res) => {
   }
 };
 
-// 🚗 تخصيص سائق لطلب الوقود مع الإشعارات
 exports.assignOrderDriver = async (req, res) => {
   try {
     const { orderId } = req.params;
-    const { driverId } = req.body;
-    const userId = req.user.userId;
+    const { driverId, allowReplace = false } = req.body;
 
-    // التحقق من الصلاحية (الإدمن والمشرفين)
+    // ✅ صلاحيات
     if (!['admin', 'approval_supervisor'].includes(req.user.userType)) {
       return res.status(403).json({
         success: false,
@@ -1479,11 +1511,11 @@ exports.assignOrderDriver = async (req, res) => {
       });
     }
 
-    // التحقق من وجود السائق
-    const driver = await User.findOne({ 
-      _id: driverId, 
+    // ✅ تحقق من السائق
+    const driver = await User.findOne({
+      _id: driverId,
       userType: 'driver',
-      isActive: true 
+      isActive: true
     });
 
     if (!driver) {
@@ -1493,15 +1525,46 @@ exports.assignOrderDriver = async (req, res) => {
       });
     }
 
-    const updateData = {
+    // 🔍 1) البحث عن طلب نشط للسائق
+    const activeOrder = await Order.findOne({
       driverId,
-      status: 'assigned_to_driver',
-      assignedToDriverAt: new Date()
-    };
+      serviceType: 'fuel',
+      status: {
+        $in: [
+          'assigned_to_driver',
+          'picked_up',
+          'in_transit',
+          'on_the_way',
+          'fueling'
+        ]
+      }
+    });
 
+    // 🛑 2) لو فيه طلب نشط ومش مسموح استبدال
+    if (activeOrder && !allowReplace) {
+      return res.status(400).json({
+        success: false,
+        code: 'DRIVER_HAS_ACTIVE_ORDER',
+        message: 'السائق لديه طلب نشط بالفعل'
+      });
+    }
+
+    // 🔁 3) لو فيه طلب نشط ومسموح الاستبدال
+    if (activeOrder && allowReplace) {
+      activeOrder.driverId = null;
+      activeOrder.status = 'approved'; // أو pending حسب نظامك
+      activeOrder.unassignedAt = new Date();
+      await activeOrder.save();
+    }
+
+    // ✅ 4) تعيين الطلب الجديد
     const order = await Order.findOneAndUpdate(
-      { _id: orderId, serviceType: 'fuel' }, 
-      updateData, 
+      { _id: orderId, serviceType: 'fuel' },
+      {
+        driverId,
+        status: 'assigned_to_driver',
+        assignedToDriverAt: new Date()
+      },
       { new: true }
     )
     .populate('customerId', 'name phone')
@@ -1514,7 +1577,7 @@ exports.assignOrderDriver = async (req, res) => {
       });
     }
 
-    // 🔔 إرسال إشعارات تلقائية
+    // 🔔 إشعار تلقائي
     await NotificationService.sendOrderNotification(
       order._id,
       'order_assigned_to_driver',
@@ -1524,25 +1587,29 @@ exports.assignOrderDriver = async (req, res) => {
       }
     );
 
-    console.log('✅ تم تخصيص سائق لطلب الوقود:', {
+    console.log('✅ تم تخصيص سائق:', {
       orderId: order._id,
-      driverId: order.driverId._id
+      driverId: driver._id,
+      replaced: !!activeOrder
     });
 
-    res.json({
+    return res.json({
       success: true,
-      message: 'تم تخصيص السائق للطلب بنجاح',
+      message: activeOrder
+        ? 'تم استبدال الطلب القديم وتعيين السائق للطلب الجديد'
+        : 'تم تخصيص السائق للطلب بنجاح',
       order
     });
 
   } catch (error) {
-    console.error('❌ خطأ في تخصيص سائق لطلب الوقود:', error);
+    console.error('❌ خطأ في تخصيص السائق:', error);
     res.status(500).json({
       success: false,
       error: error.message
     });
   }
 };
+
 
 // 📍 تحديث تتبع طلب الوقود (للسائق) مع الإشعارات
 exports.updateOrderTracking = async (req, res) => {

@@ -286,10 +286,11 @@
 // };
 
 
-// controllers/driverController.js
+const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const Petrol = require('../models/Petrol');
 const User = require('../models/User');
+
 
 // 🚗 الحصول على ملف السائق الشخصي
 exports.getDriverProfile = async (req, res) => {
@@ -382,52 +383,58 @@ exports.getDriverStats = async (req, res) => {
   }
 };
 
-// 📦 الحصول على الطلبات المتاحة
-exports.getAvailableOrders = async (req, res) => {
+exports.saveFcmToken = async (req, res) => {
   try {
-    // طلبات افتراضية للتجربة
-    const availableOrders = [
-      {
-        id: '1',
-        serviceType: 'fuel',
-        status: 'ready_for_delivery',
-        customerName: 'محمد أحمد',
-        customerPhone: '0512345678',
-        location: {
-          address: 'حي النخيل، الرياض',
-          lat: 24.7136,
-          lng: 46.6753
-        },
-        fuelType: '91',
-        fuelAmount: 40,
-        totalPrice: 240.00,
-        createdAt: new Date()
+    const driverId = req.user.userId;
+    const { fcmToken } = req.body;
+
+    await User.findByIdAndUpdate(driverId, {
+      $addToSet: { fcmTokens: fcmToken }
+    });
+
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+};
+
+
+exports.getAvailableFuelOrdersForDriver = async (req, res) => {
+  try {
+    console.log('🟡 getAvailableFuelOrdersForDriver CALLED');
+
+    const driverId = req.user.userId; // 👈 السائق الحالي
+
+    const orders = await Order.find({
+      serviceType: 'fuel',
+
+      // الحالات اللي تعتبر "متاحة"
+      status: {
+        $in: [
+          'ready_for_delivery',
+          'assigned_to_driver'
+        ]
       },
-      {
-        id: '2',
-        serviceType: 'product',
-        status: 'ready_for_delivery',
-        customerName: 'أحمد سالم',
-        customerPhone: '0512345679',
-        location: {
-          address: 'حي العليا، الرياض',
-          lat: 24.7236,
-          lng: 46.6853
-        },
-        products: [
-          { name: 'زيت محرك', quantity: 2, price: 120.00 }
-        ],
-        totalPrice: 240.00,
-        createdAt: new Date()
-      }
-    ];
+
+      // يا إما مش متعيّن
+      // يا إما متعيّن للسائق الحالي
+      $or: [
+        { driverId: null },
+        { driverId: { $exists: false } },
+        { driverId: driverId }
+      ]
+    })
+      .populate('customerId', 'name phone')
+      .sort({ createdAt: -1 });
+
+    console.log('📦 Available orders found:', orders.length);
 
     res.json({
       success: true,
-      orders: availableOrders
+      orders
     });
-
   } catch (error) {
+    console.error('❌ getAvailableFuelOrdersForDriver:', error);
     res.status(500).json({
       success: false,
       error: error.message
@@ -435,23 +442,154 @@ exports.getAvailableOrders = async (req, res) => {
   }
 };
 
-// 🚚 الحصول على الطلبات النشطة
-exports.getActiveOrders = async (req, res) => {
+
+
+
+exports.getAllOrdersForDriver = async (req, res) => {
   try {
-    const activeOrders = []; // افتراضي فارغ
+    const driverId = new mongoose.Types.ObjectId(req.user.userId);
+
+    console.log('🟢 getAllOrdersForDriver for:', driverId.toString());
+
+    const orders = await Order.find({
+      $or: [
+        { driverId: driverId },           // ✅ ObjectId
+        { driverId: driverId.toString() } // ⚠️ لو فيه داتا قديمة String
+      ]
+    })
+      .populate('customerId', 'name phone')
+      .sort({ createdAt: -1 });
+
+    console.log('📦 Total driver orders:', orders.length);
 
     res.json({
       success: true,
-      orders: activeOrders
+      orders
     });
-
   } catch (error) {
+    console.error('❌ getAllOrdersForDriver:', error);
     res.status(500).json({
       success: false,
       error: error.message
     });
   }
 };
+
+
+
+
+
+
+exports.getActiveOrdersForDriver = async (req, res) => {
+  try {
+    // ✅ حوّل الـ driverId إلى ObjectId صريح
+    const driverId = new mongoose.Types.ObjectId(req.user.userId);
+
+    console.log('🟢 getActiveOrdersForDriver driverId:', driverId);
+
+    const orders = await Order.find({
+      driverId: driverId,
+      status: {
+        $in: [
+          'assigned_to_driver',
+          'picked_up',
+          'in_transit',
+          'on_the_way',
+          'fueling',
+        ],
+      },
+    })
+      .populate('customerId', 'name phone')
+      .sort({ createdAt: -1 });
+
+    console.log('📦 Active orders found:', orders.length);
+
+    return res.json({
+      success: true,
+      orders,
+    });
+  } catch (error) {
+    console.error('❌ getActiveOrdersForDriver error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+};
+
+
+
+
+// // 📦 الحصول على الطلبات المتاحة
+// exports.getAvailableOrders = async (req, res) => {
+//   try {
+//     // طلبات افتراضية للتجربة
+//     const availableOrders = [
+//       {
+//         id: '1',
+//         serviceType: 'fuel',
+//         status: 'ready_for_delivery',
+//         customerName: 'محمد أحمد',
+//         customerPhone: '0512345678',
+//         location: {
+//           address: 'حي النخيل، الرياض',
+//           lat: 24.7136,
+//           lng: 46.6753
+//         },
+//         fuelType: '91',
+//         fuelAmount: 40,
+//         totalPrice: 240.00,
+//         createdAt: new Date()
+//       },
+//       {
+//         id: '2',
+//         serviceType: 'product',
+//         status: 'ready_for_delivery',
+//         customerName: 'أحمد سالم',
+//         customerPhone: '0512345679',
+//         location: {
+//           address: 'حي العليا، الرياض',
+//           lat: 24.7236,
+//           lng: 46.6853
+//         },
+//         products: [
+//           { name: 'زيت محرك', quantity: 2, price: 120.00 }
+//         ],
+//         totalPrice: 240.00,
+//         createdAt: new Date()
+//       }
+//     ];
+
+//     res.json({
+//       success: true,
+//       orders: availableOrders
+//     });
+
+//   } catch (error) {
+//     res.status(500).json({
+//       success: false,
+//       error: error.message
+//     });
+//   }
+// };
+
+// // 🚚 الحصول على الطلبات النشطة
+// exports.getActiveOrders = async (req, res) => {
+//   try {
+//     const activeOrders = []; // افتراضي فارغ
+
+//     res.json({
+//       success: true,
+//       orders: activeOrders
+//     });
+
+//   } catch (error) {
+//     res.status(500).json({
+//       success: false,
+//       error: error.message
+//     });
+//   }
+// };
 
 // ✅ الحصول على الطلبات المكتملة
 exports.getCompletedOrders = async (req, res) => {
@@ -471,35 +609,27 @@ exports.getCompletedOrders = async (req, res) => {
   }
 };
 
-// 🎯 قبول طلب
-exports.acceptOrder = async (req, res) => {
+exports.getOrderDetails = async (req, res) => {
   try {
     const driverId = req.user.userId;
-    const { orderId, orderType } = req.body;
+    const { orderId } = req.params;
 
-    if (req.user.userType !== 'driver') {
-      return res.status(403).json({
-        success: false,
-        error: 'غير مسموح بقبول الطلبات'
-      });
-    }
+    const order = await Order.findOne({
+      _id: orderId,
+      driverId
+    }).populate('customerId', 'name phone');
 
-    // التحقق من أن السائق مفعل
-    const driver = await User.findById(driverId);
-    if (!driver.isActive) {
-      return res.status(403).json({
+    if (!order) {
+      return res.status(404).json({
         success: false,
-        error: 'حسابك غير مفعل. يرجى التواصل مع الإدارة'
+        error: 'الطلب غير موجود أو غير مخصص لك'
       });
     }
 
     res.json({
       success: true,
-      message: 'تم قبول الطلب بنجاح',
-      orderId,
-      orderType
+      order
     });
-
   } catch (error) {
     res.status(500).json({
       success: false,
@@ -508,7 +638,58 @@ exports.acceptOrder = async (req, res) => {
   }
 };
 
-// 📍 تحديث حالة الاتصال
+
+exports.acceptOrder = async (req, res) => {
+  try {
+    const driverId = req.user.userId;
+    const { orderId, serviceType } = req.body;
+
+    console.log('ACCEPT DEBUG =>', { orderId, serviceType, driverId });
+
+    if (req.user.userType !== 'driver') {
+      return res.status(403).json({ success: false, error: 'غير مسموح بقبول الطلبات' });
+    }
+
+    const driver = await User.findById(driverId);
+    if (!driver || !driver.isActive) {
+      return res.status(403).json({ success: false, error: 'حسابك غير مفعل' });
+    }
+
+    const filter = {
+      _id: orderId,
+      status: 'ready_for_delivery',
+      ...(serviceType ? { serviceType } : {}),
+      $or: [{ driverId: null }, { driverId: { $exists: false } }],
+    };
+
+    const update = {
+      driverId,
+      status: 'assigned_to_driver',
+      assignedToDriverAt: new Date(),
+    };
+
+    const order = await Order.findOneAndUpdate(filter, update, { new: true })
+      .populate('customerId', 'name phone');
+
+    if (!order) {
+      return res.status(400).json({
+        success: false,
+        error: 'الطلب غير متاح أو تم قبوله بالفعل'
+      });
+    }
+
+    return res.json({ success: true, order });
+
+  } catch (error) {
+    console.error('❌ acceptOrder error:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+
+
+
+
 exports.updateOnlineStatus = async (req, res) => {
   try {
     const { isOnline } = req.body;
@@ -522,13 +703,13 @@ exports.updateOnlineStatus = async (req, res) => {
     }
 
     await User.findByIdAndUpdate(driverId, {
-      isActive: isOnline,
+      isOnline: isOnline,      // ✅ الصح
       lastSeen: new Date()
     });
 
     res.json({
       success: true,
-      message: isOnline ? 'تم التوصيل' : 'تم قطع الاتصال',
+      message: isOnline ? 'تم الاتصال' : 'تم قطع الاتصال',
       isOnline
     });
 
@@ -539,6 +720,85 @@ exports.updateOnlineStatus = async (req, res) => {
     });
   }
 };
+
+
+exports.getDriversForAssignment = async (req, res) => {
+  try {
+    // للأدمن فقط
+    if (!['admin', 'approval_supervisor'].includes(req.user.userType)) {
+      return res.status(403).json({
+        success: false,
+        error: 'غير مسموح'
+      });
+    }
+
+    const drivers = await User.find({
+      userType: 'driver',
+      isActive: true
+    })
+      .populate('completeProfile')
+      .lean();
+
+    const driverIds = drivers.map(d => d._id);
+
+    const activeOrders = await Order.find({
+      driverId: { $in: driverIds },
+      status: {
+        $in: [
+          'assigned_to_driver',
+          'picked_up',
+          'in_transit',
+          'on_the_way',
+          'fueling'
+        ]
+      }
+    }).lean();
+
+    const orderByDriver = {};
+    activeOrders.forEach(order => {
+      orderByDriver[order.driverId.toString()] = order;
+    });
+
+    const result = drivers.map(driver => {
+      const activeOrder = orderByDriver[driver._id.toString()] || null;
+
+      const isOnline = driver.isOnline === true;
+      const isAvailable = !activeOrder;
+
+      let status = 'offline';
+      if (isOnline && isAvailable) status = 'online';
+      else if (isOnline && !isAvailable) status = 'busy';
+
+      return {
+        _id: driver._id,
+        name: driver.name,
+        phone: driver.phone,
+        vehicleType: driver.completeProfile?.vehicleInfo?.vehicleType || null,
+        vehiclePlate: driver.completeProfile?.vehicleInfo?.plateNumber || null,
+        isOnline,
+        isAvailable,
+        status,
+        assignedOrder: activeOrder,
+        completedOrders: driver.orders?.length || 0,
+        currentLocation: driver.location?.address || null
+      };
+    });
+
+    res.json({
+      success: true,
+      drivers: result
+    });
+
+  } catch (error) {
+    console.error('❌ getDriversForAssignment:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+};
+
+
 
 // 🗺️ تحديث الموقع
 exports.updateLocation = async (req, res) => {

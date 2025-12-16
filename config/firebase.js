@@ -3,6 +3,7 @@ require('dotenv').config();
 const admin = require('firebase-admin');
 const fs = require('fs');
 const path = require('path');
+const User = require('../models/User'); // ✅ مهم جدًا
 
 let firebaseInitialized = false;
 let bucket = null;
@@ -27,10 +28,7 @@ function loadServiceAccount() {
 
 try {
   const serviceAccount = loadServiceAccount();
-
-  if (!serviceAccount) {
-    throw new Error("Missing service account file");
-  }
+  if (!serviceAccount) throw new Error("Missing service account file");
 
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
@@ -38,107 +36,89 @@ try {
   });
 
   firebaseInitialized = true;
-
   console.log("✅ Firebase initialized!");
-  console.log(`📧 Service Account: ${serviceAccount.client_email}`);
-  console.log(`🏢 Project: ${serviceAccount.project_id}`);
-
 } catch (error) {
   console.error("❌ Firebase init failed:", error.message);
 }
 
 if (firebaseInitialized) {
-  try { bucket = admin.storage().bucket(); } catch { bucket = null; }
-  try { messaging = admin.messaging(); } catch { messaging = null; }
+  try { bucket = admin.storage().bucket(); } catch {}
+  try { messaging = admin.messaging(); } catch {}
 }
 
-// ===============================
-//   🔥 NEW FCM FUNCTION (SDK v11+)
-// ===============================
+// ========================================
+// 🔔 SEND FCM NOTIFICATION (FINAL)
+// ========================================
 async function sendFCMNotification(tokens, notification, data = {}) {
   if (!firebaseInitialized || !messaging) {
-    console.log("📱 [LOCAL MODE] Simulated FCM:", { tokens, notification, data });
+    console.log("📱 [LOCAL MODE] Simulated FCM");
     return { success: true };
   }
 
-  try {
-    // Ensure tokens is array
-    if (typeof tokens === "string") tokens = [tokens];
-    if (!Array.isArray(tokens) || tokens.length === 0) {
-      console.log("⚠ No FCM tokens provided");
-      return { success: false };
-    }
-
-    // Prepare messages
-    const payloads = tokens.map(token => ({
-      token,
-      notification: {
-        title: notification.title,
-        body: notification.body
-      },
-      data: {
-        ...convertToStringData(data),
-        notificationId: String(notification._id || ''),
-        type: String(notification.type || ''),
-      },
-
-      android: { priority: "high" },
-      apns: {
-        payload: {
-          aps: { sound: "default", badge: 1 }
-        }
-      }
-    }));
-
-    // ✔ NEW — Compatible with all Firebase Admin SDK versions
-    const rawResult = await messaging.sendEach(payloads);
-
-    // Normalize results
-    const results =
-      Array.isArray(rawResult) ? rawResult :
-      rawResult.responses ? rawResult.responses :
-      rawResult.results ? rawResult.results :
-      [rawResult];
-
-    const successCount = results.filter(r => r.success).length;
-    const failureCount = results.length - successCount;
-
-    console.log(`📨 FCM sent => success: ${successCount}, failed: ${failureCount}`);
-
-     results.forEach((r, i) => {
-      if (!r.success) {
-        console.log(`❌ Token Failed [${i}]`, tokens[i], r.error || r);
-      }
-    });
-
-    return {
-      success: true,
-      result: { successCount, failureCount }
-    };
-
-  } catch (error) {
-    console.error("❌ FCM Error:", error);
-    return { success: false, error };
+  if (typeof tokens === "string") tokens = [tokens];
+  if (!Array.isArray(tokens) || tokens.length === 0) {
+    console.log("⚠ No FCM tokens provided");
+    return { success: false };
   }
-}
 
+  const payloads = tokens.map(token => ({
+    token,
+    notification: {
+      title: notification.title,
+      body: notification.body
+    },
+    data: convertToStringData({
+      ...data,
+      notificationId: notification._id?.toString() || '',
+      type: notification.type || ''
+    }),
+    android: { priority: "high" },
+    apns: { payload: { aps: { sound: "default", badge: 1 } } }
+  }));
+
+  const rawResult = await messaging.sendEach(payloads);
+  const results = rawResult.responses || [];
+
+  let successCount = 0;
+  let failureCount = 0;
+
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    if (r.success) {
+      successCount++;
+    } else {
+      failureCount++;
+      const token = tokens[i];
+      const code = r.error?.errorInfo?.code || r.error?.code;
+
+      console.log(`❌ Token Failed`, token, code);
+
+      if (code === 'messaging/registration-token-not-registered') {
+        await User.updateMany(
+          { fcmTokens: token },
+          { $pull: { fcmTokens: token } }
+        );
+        console.log('🧹 Invalid token removed:', token);
+      }
+    }
+  }
+
+  console.log(`📨 FCM sent => success: ${successCount}, failed: ${failureCount}`);
+  return { success: true, result: { successCount, failureCount } };
+}
 
 function convertToStringData(obj) {
   const result = {};
-
-  for (const key in obj) {
-    if (obj[key] === undefined || obj[key] === null) {
-      result[key] = "";
-    } else if (typeof obj[key] === "object") {
-      result[key] = JSON.stringify(obj[key]);
-    } else {
-      result[key] = String(obj[key]);
-    }
+  for (const k in obj) {
+    result[k] =
+      obj[k] === undefined || obj[k] === null
+        ? ''
+        : typeof obj[k] === 'object'
+        ? JSON.stringify(obj[k])
+        : String(obj[k]);
   }
-
   return result;
 }
-
 
 module.exports = {
   admin,
