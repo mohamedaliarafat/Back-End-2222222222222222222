@@ -36,7 +36,7 @@ const UserSchema = new mongoose.Schema(
     },
     profileImage: {
       type: String,
-      default: "https://c.top4top.io/p_3613ezehd1.png"
+      default: ""
     },
 
     // 📍 الموقع (مستخدم للسائقين)
